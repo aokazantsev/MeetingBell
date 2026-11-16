@@ -19,9 +19,12 @@ namespace MeetingBell
         public event Action<ReminderForm> JoinClicked;
         public event Action<ReminderForm> SnoozeClicked;
 
-        public ReminderForm(Meeting meeting)
+        private const string NewMeetingHeadline = "На сегодня назначена новая встреча";
+
+        public ReminderForm(Meeting meeting, bool newMeetingNotice)
         {
             this.meeting = meeting;
+            IsNewMeetingNotice = newMeetingNotice;
             Text = AppIdentity.Name;
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
             ShowInTaskbar = false;
@@ -54,6 +57,18 @@ namespace MeetingBell
                 Margin = new Padding(0, 0, 0, unit / 4)
             };
             timing = new Label { AutoSize = true, MaximumSize = new Size(width, 0), UseMnemonic = false };
+            if (newMeetingNotice)
+            {
+                layout.Controls.Add(new Label
+                {
+                    Text = NewMeetingHeadline,
+                    AutoSize = true,
+                    MaximumSize = new Size(width, 0),
+                    UseMnemonic = false,
+                    ForeColor = Muted,
+                    Margin = new Padding(0, 0, 0, unit / 4)
+                });
+            }
             layout.Controls.Add(subject);
             layout.Controls.Add(timing);
             if (!string.IsNullOrWhiteSpace(meeting.Location) && meeting.Location.Trim() != meeting.Link)
@@ -79,14 +94,17 @@ namespace MeetingBell
             };
             var close = new Button { Text = "Закрыть", AutoSize = true, DialogResult = DialogResult.Cancel };
             close.Click += (sender, e) => Close();
-            var snooze = new Button { Text = "Через 1 мин", AutoSize = true };
-            snooze.Click += (sender, e) =>
-            {
-                if (SnoozeClicked != null) SnoozeClicked(this);
-                Close();
-            };
             buttons.Controls.Add(close);
-            buttons.Controls.Add(snooze);
+            if (!newMeetingNotice)
+            {
+                var snooze = new Button { Text = "Через 1 мин", AutoSize = true };
+                snooze.Click += (sender, e) =>
+                {
+                    if (SnoozeClicked != null) SnoozeClicked(this);
+                    Close();
+                };
+                buttons.Controls.Add(snooze);
+            }
             if (meeting.Link != null)
             {
                 var join = new Button { Text = MeetingLinks.JoinText(meeting.Link), AutoSize = true };
@@ -108,6 +126,8 @@ namespace MeetingBell
             refreshTimer.Tick += (sender, e) => UpdateTiming();
             refreshTimer.Start();
         }
+
+        public bool IsNewMeetingNotice { get; private set; }
 
         public Meeting Meeting
         {

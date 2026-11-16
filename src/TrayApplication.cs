@@ -21,7 +21,6 @@ namespace MeetingBell
         private const int HoverRadius = 20;
         private const int HideAfterMs = 400;
         private const int ReminderGap = 8;
-        private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan SnoozeFor = TimeSpan.FromMinutes(1);
         private static readonly int[] LeadChoices = { 0, 1, 5, 10, 15, 30 };
         private static readonly string ReminderSound = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Media\Windows Notify Calendar.wav");
@@ -37,6 +36,7 @@ namespace MeetingBell
         private readonly ContextMenuStrip meetingMenu = new ContextMenuStrip();
         private readonly ReminderPlanner planner = new ReminderPlanner();
         private readonly List<ReminderForm> reminders = new List<ReminderForm>();
+        private readonly Dictionary<string, DescriptionForm> descriptions = new Dictionary<string, DescriptionForm>();
         private AppSettings settings;
         private ExchangeCredential credential;
         private string credentialProblem;
@@ -56,6 +56,14 @@ namespace MeetingBell
         private bool authenticationFailed;
         private int loggedMeetingCount = -1;
         private DateTime nextRefresh = DateTime.MinValue;
+        private DateTime nextMailRefresh = DateTime.MinValue;
+        private bool mailFetching;
+        private bool mailRefreshPending;
+        private bool accessConfirmed;
+        private const int RetryMinutes = 5;
+        private int mailGeneration;
+        private int? mailUnread;
+        private string mailError;
         private Point hoverAnchor;
         private DateTime outsideSince = DateTime.MaxValue;
         private bool updateBalloonShown;
@@ -89,6 +97,7 @@ namespace MeetingBell
             trayIcon.BalloonTipClicked += OnBalloonClicked;
             listForm.MeetingClicked += OnMeetingClicked;
             listForm.StatusClicked += OnStatusClicked;
+            listForm.MailClicked += OnMailClicked;
             hoverTimer.Interval = HoverCheckMs;
             hoverTimer.Tick += OnHoverTick;
             tickTimer.Interval = TickMs;
@@ -136,6 +145,7 @@ namespace MeetingBell
             hoverTimer.Dispose();
             if (settingsForm != null) settingsForm.Close();
             foreach (ReminderForm reminder in reminders.ToArray()) reminder.Close();
+            foreach (DescriptionForm description in new List<DescriptionForm>(descriptions.Values)) description.Close();
             listForm.Dispose();
             meetingMenu.Dispose();
             trayIcon.Visible = false;
@@ -205,6 +215,7 @@ namespace MeetingBell
                 vpnUp = vpn;
             }
             if (vpn && HasCredential && !authenticationFailed && !fetching && now >= nextRefresh) StartFetch(now);
+            if (vpn && HasCredential && !authenticationFailed && accessConfirmed && !mailFetching && now >= nextMailRefresh) StartMailFetch();
             ShowDueReminders(now);
             UpdateTray();
             if (listForm.Visible) PopulateList();
@@ -236,7 +247,7 @@ namespace MeetingBell
                     var client = new EwsClient(url, used);
                     meetings = client.Day(day);
                     unreadBodies = client.UnreadBodies;
-                    if (client.LinksProblem != null) AppLog.Append("calendar links not loaded: " + client.LinksProblem);
+                    if (client.BodiesProblem != null) AppLog.Append("invitation texts not loaded: " + client.BodiesProblem);
                 }
                 catch (CalendarException failure)
                 {
@@ -259,7 +270,7 @@ namespace MeetingBell
             DateTime now = DateTime.Now;
             bool again = refreshPending || day != cache.Day;
             refreshPending = false;
-            nextRefresh = again ? DateTime.MinValue : now + RefreshInterval;
+            nextRefresh = again ? DateTime.MinValue : now.AddMinutes(error == null ? settings.CalendarMinutes : Math.Min(settings.CalendarMinutes, RetryMinutes));
             if (again) Post(Tick);
             if (day != cache.Day) return;
             if (error != null)
@@ -279,9 +290,16 @@ namespace MeetingBell
                 if (listForm.Visible) PopulateList();
                 return;
             }
-            if (lastError != null) AppLog.Append("calendar ok again");
-            lastError = null;
+            if (lastError != null && !authenticationFailed) AppLog.Append("calendar ok again");
+            if (!authenticationFailed) lastError = null;
+            if (!accessConfirmed)
+            {
+                accessConfirmed = true;
+                nextMailRefresh = DateTime.MinValue;
+                Post(Tick);
+            }
             MergeLinks(meetings, unreadBodies, cache.Meetings);
+            List<Meeting> added = NewMeetingFinder.Find(cache.Fetched, cache.Meetings, meetings, now);
             cache.Meetings = meetings;
             cache.Fetched = now;
             SaveCache();
@@ -293,18 +311,32 @@ namespace MeetingBell
             string seenProblem = preferences.MarkSeen(meetings, now);
             if (seenProblem != null) AppLog.Append("meeting preferences not saved: " + seenProblem);
             ShowDueReminders(now);
+            ShowNewMeetings(added);
             UpdateTray();
             UpdateUsageState();
             if (listForm.Visible) PopulateList();
+        }
+
+        private void ShowNewMeetings(List<Meeting> added)
+        {
+            foreach (Meeting meeting in added)
+            {
+                if (preferences.EffectiveLead(meeting, settings.LeadMinutes) == MeetingPreferences.Off) continue;
+                if (reminders.Exists(open => open.Meeting.ReminderKey == meeting.ReminderKey)) continue;
+                ShowReminder(meeting, true);
+                AppLog.Append("new meeting notice: meeting at " + meeting.Start.ToString("HH:mm") + ", link " + (meeting.Link != null ? "yes" : "no"));
+                Usage.Hit("notice.show");
+            }
         }
 
         internal static void KeepKnownLinks(List<Meeting> fresh, List<Meeting> previous)
         {
             foreach (Meeting meeting in fresh)
             {
-                if (meeting.Link != null) continue;
-                Meeting known = previous.Find(old => old.ReminderKey == meeting.ReminderKey && old.Link != null);
-                if (known != null) meeting.Link = known.Link;
+                Meeting known = previous.Find(old => old.ReminderKey == meeting.ReminderKey);
+                if (known == null) continue;
+                if (meeting.Link == null) meeting.Link = known.Link;
+                if (meeting.Description == null) meeting.Description = known.Description;
             }
         }
 
@@ -322,9 +354,94 @@ namespace MeetingBell
             }
         }
 
+        private void StartMailFetch()
+        {
+            mailFetching = true;
+            int generation = ++mailGeneration;
+            string url = settings.EwsUrl;
+            ExchangeCredential used = credential;
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                int? unread = null;
+                string error = null;
+                bool authentication = false;
+                try
+                {
+                    unread = new EwsClient(url, used).InboxUnread();
+                }
+                catch (CalendarException failure)
+                {
+                    error = failure.Message;
+                    authentication = failure.IsAuthentication;
+                }
+                catch (Exception failure)
+                {
+                    AppLog.Append("mail fetch failed: " + failure);
+                    error = "внутренняя ошибка: " + failure.Message;
+                }
+                Post(() => OnMailFetched(generation, unread, error, authentication));
+            });
+        }
+
+        private void OnMailFetched(int generation, int? unread, string error, bool authentication)
+        {
+            if (generation != mailGeneration) return;
+            mailFetching = false;
+            nextMailRefresh = mailRefreshPending ? DateTime.MinValue : DateTime.Now.AddMinutes(error == null ? settings.MailMinutes : Math.Min(settings.MailMinutes, RetryMinutes));
+            if (mailRefreshPending) Post(Tick);
+            mailRefreshPending = false;
+            if (error != null)
+            {
+                if (error != mailError) AppLog.Append("mail error: " + error);
+                mailError = error;
+                if (authentication && !authenticationFailed)
+                {
+                    authenticationFailed = true;
+                    lastError = error;
+                    AppLog.Append("calendar polling paused until credentials change");
+                }
+                UpdateTray();
+                if (listForm.Visible) PopulateList();
+                return;
+            }
+            if (unread != mailUnread) AppLog.Append("mail: " + unread + " unread in inbox");
+            mailError = null;
+            mailUnread = unread;
+            if (listForm.Visible) PopulateList();
+        }
+
+        internal static string MailLine(int? unread, string error)
+        {
+            if (error == null) return MailText(unread);
+            return unread.HasValue ? MailText(unread) + " · не обновлено" : "Почта не загружена: " + error;
+        }
+
+        internal static string MailText(int? unread)
+        {
+            if (!unread.HasValue) return "Почта ещё не загружена";
+            int count = unread.Value;
+            if (count == 0) return "Новых писем нет";
+            int lastTwo = count % 100;
+            int last = count % 10;
+            string word = lastTwo >= 11 && lastTwo <= 14 ? "новых писем" : last == 1 ? "новое письмо" : last >= 2 && last <= 4 ? "новых письма" : "новых писем";
+            return "У вас " + count + " " + word;
+        }
+
+        private void OnMailClicked()
+        {
+            Usage.Hit("mail.open");
+            HideList();
+            string url = settings.WebMailUrl;
+            string problem = url == null ? "адрес веб-почты не задан" : MeetingLinks.Open(url);
+            AppLog.Append(problem == null ? "mail opened" : "mail not opened: " + problem);
+            if (problem != null) MessageBox.Show("Не удалось открыть почту: " + problem, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
         private void RequestRefresh()
         {
             nextRefresh = DateTime.MinValue;
+            nextMailRefresh = DateTime.MinValue;
+            if (mailFetching) mailRefreshPending = true;
             if (fetching) refreshPending = true;
         }
 
@@ -332,11 +449,19 @@ namespace MeetingBell
         {
             authenticationFailed = false;
             lastError = null;
+            mailError = null;
+            accessConfirmed = false;
             if (fetching && abandonRunning)
             {
                 fetching = false;
                 refreshPending = false;
                 fetchGeneration++;
+            }
+            if (mailFetching && abandonRunning)
+            {
+                mailFetching = false;
+                mailRefreshPending = false;
+                mailGeneration++;
             }
             RequestRefresh();
             Tick();
@@ -355,22 +480,23 @@ namespace MeetingBell
             foreach (Meeting meeting in due)
             {
                 cache.Shown.Add(meeting.ReminderKey);
-                if (reminders.Exists(open => open.Meeting.ReminderKey == meeting.ReminderKey)) continue;
-                ShowReminder(meeting);
+                if (reminders.Exists(open => !open.IsNewMeetingNotice && open.Meeting.ReminderKey == meeting.ReminderKey)) continue;
+                foreach (ReminderForm notice in reminders.FindAll(open => open.IsNewMeetingNotice && open.Meeting.ReminderKey == meeting.ReminderKey)) notice.Close();
+                ShowReminder(meeting, false);
                 AppLog.Append("reminder: meeting at " + meeting.Start.ToString("HH:mm") + ", lead " + preferences.EffectiveLead(meeting, settings.LeadMinutes) + " min, link " + (meeting.Link != null ? "yes" : "no"));
                 Usage.Hit("reminder.show");
             }
             SaveCache();
         }
 
-        private void ShowReminder(Meeting meeting)
+        private void ShowReminder(Meeting meeting, bool newMeetingNotice)
         {
-            var form = new ReminderForm(meeting);
+            var form = new ReminderForm(meeting, newMeetingNotice);
             bool handled = false;
             form.JoinClicked += reminder =>
             {
                 handled = true;
-                Usage.Hit("reminder.join");
+                Usage.Hit(newMeetingNotice ? "notice.join" : "reminder.join");
                 OpenLink(reminder.Meeting);
             };
             form.SnoozeClicked += reminder =>
@@ -382,7 +508,7 @@ namespace MeetingBell
             };
             form.FormClosed += (sender, e) =>
             {
-                if (!handled && !exiting) Usage.Hit("reminder.close");
+                if (!handled && !exiting && !newMeetingNotice) Usage.Hit("reminder.close");
                 reminders.Remove(form);
                 form.Dispose();
                 Restack();
@@ -471,7 +597,7 @@ namespace MeetingBell
             bool problem;
             bool clickable;
             string status = StatusLine(out problem, out clickable);
-            listForm.Populate(cache.Meetings, now, status, problem, clickable, Describe);
+            listForm.Populate(cache.Meetings, now, status, problem, clickable, Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null);
             if (listForm.Visible) listForm.ShowNear(hoverAnchor);
         }
 
@@ -524,6 +650,7 @@ namespace MeetingBell
 
         private void OnTrayMouseMove(object sender, MouseEventArgs e)
         {
+            if (trayIcon.ContextMenuStrip.Visible) return;
             hoverAnchor = Cursor.Position;
             outsideSince = DateTime.MaxValue;
             if (listForm.Visible) return;
@@ -532,7 +659,7 @@ namespace MeetingBell
 
         private void OnTrayMouseClick(object sender, MouseEventArgs e)
         {
-            if (e.Button != MouseButtons.Left) return;
+            if (e.Button != MouseButtons.Left || trayIcon.ContextMenuStrip.Visible) return;
             hoverAnchor = Cursor.Position;
             outsideSince = DateTime.MaxValue;
             if (!listForm.Visible) ShowList();
@@ -593,6 +720,15 @@ namespace MeetingBell
                     OpenLink(meeting);
                 }));
             }
+            if (meeting.Description != null)
+            {
+                meetingMenu.Items.Add(new ToolStripMenuItem("Описание", null, (s, a) =>
+                {
+                    Usage.Hit("meeting.description");
+                    HideList();
+                    ShowDescription(meeting);
+                }));
+            }
             if (!meeting.IsAllDay)
             {
                 meetingMenu.Items.Add(new ToolStripSeparator());
@@ -611,6 +747,25 @@ namespace MeetingBell
             }
             SetForegroundWindow(listForm.Handle);
             meetingMenu.Show(at);
+        }
+
+        private void ShowDescription(Meeting meeting)
+        {
+            DescriptionForm open;
+            if (descriptions.TryGetValue(meeting.ReminderKey, out open))
+            {
+                open.Activate();
+                return;
+            }
+            var form = new DescriptionForm(meeting);
+            descriptions[meeting.ReminderKey] = form;
+            form.FormClosed += (sender, e) =>
+            {
+                descriptions.Remove(meeting.ReminderKey);
+                form.Dispose();
+            };
+            form.Show();
+            form.Activate();
         }
 
         private static ToolStripMenuItem Disabled(string text)
@@ -777,7 +932,13 @@ namespace MeetingBell
             AppLog.Append("settings: ews host=" + EwsHost(settings.EwsUrl) + ", vpn adapters=" + (settings.ChecksVpn ? AppSettings.JoinList(settings.VpnAdapters) : "not checked") + ", lead=" + settings.LeadMinutes);
             vpnUp = null;
             UpdateUsageState();
-            if (accessChanged) RefreshNow(true);
+            if (accessChanged)
+            {
+                cache.Fetched = null;
+                SaveCache();
+                mailUnread = null;
+                RefreshNow(true);
+            }
             else Tick();
             if (problems.Count > 0) MessageBox.Show(string.Join(Environment.NewLine + Environment.NewLine, problems.ToArray()), AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -854,6 +1015,9 @@ namespace MeetingBell
             Usage.SetState("vpn_check", settings.ChecksVpn);
             Usage.SetState("credential", HasCredential);
             Usage.SetState("meetings_today", cache.Meetings.Count);
+            Usage.SetState("calendar_interval", settings.CalendarMinutes);
+            Usage.SetState("mail_interval", settings.MailMinutes);
+            Usage.SetState("mail_url_custom", settings.MailUrl.Length > 0);
         }
 
         private static string EwsHost(string url)

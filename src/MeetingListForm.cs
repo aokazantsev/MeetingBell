@@ -19,6 +19,9 @@ namespace MeetingBell
         private static readonly Color Accent = Color.FromArgb(255, 183, 0);
         private static readonly Color Hover = Color.FromArgb(232, 240, 254);
         private static readonly Color Warning = Color.FromArgb(176, 90, 0);
+        private static readonly Color Separator = Color.FromArgb(225, 225, 225);
+        private static readonly Color Link = Color.FromArgb(0, 102, 204);
+        private const string OpenText = "Открыть";
         private static readonly CultureInfo Russian = new CultureInfo("ru-RU");
 
         private readonly Font titleFont;
@@ -38,9 +41,15 @@ namespace MeetingBell
         private Rectangle statusBounds;
         private int hoverRow = -1;
         private bool hoverStatus;
+        private string mailText;
+        private bool mailOpenable;
+        private Rectangle mailBounds;
+        private Rectangle mailOpenBounds;
+        private bool hoverMail;
 
         public event Action<Meeting, Point> MeetingClicked;
         public event Action StatusClicked;
+        public event Action MailClicked;
 
         public MeetingListForm()
         {
@@ -76,8 +85,10 @@ namespace MeetingBell
             }
         }
 
-        public void Populate(List<Meeting> list, DateTime current, string statusText, bool problem, bool clickable, Func<Meeting, string> description)
+        public void Populate(List<Meeting> list, DateTime current, string statusText, bool problem, bool clickable, Func<Meeting, string> description, string mail, bool mailCanOpen)
         {
+            mailText = mail;
+            mailOpenable = mailCanOpen;
             meetings = list;
             now = current;
             status = statusText;
@@ -112,7 +123,8 @@ namespace MeetingBell
             int top = padding + titleFont.Height + padding / 3;
             statusBounds = new Rectangle(padding, top, Width - padding * 2, smallFont.Height);
             top = statusBounds.Bottom + padding / 2;
-            int footer = smallFont.Height + padding;
+            int mailRow = rowFont.Height + padding;
+            int footer = padding / 2 + mailRow;
             int visible = meetings.Count == 0 ? 0 : Math.Max(1, Math.Min(meetings.Count, (maxHeight - top - footer - padding) / rowHeight));
             int skip = meetings.Count - visible;
             for (int index = 0; index < meetings.Count; index++)
@@ -132,6 +144,9 @@ namespace MeetingBell
             }
             if (meetings.Count == 0) top += rowHeight;
             Height = top + footer;
+            mailBounds = new Rectangle(0, Height - mailRow, Width, mailRow);
+            int openWidth = TextRenderer.MeasureText(OpenText, smallFont).Width + padding / 2;
+            mailOpenBounds = mailOpenable ? new Rectangle(Width - padding - openWidth, mailBounds.Y, openWidth + padding / 2, mailRow) : Rectangle.Empty;
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -155,7 +170,33 @@ namespace MeetingBell
             {
                 if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], index == hoverRow);
             }
-            TextRenderer.DrawText(graphics, "Клик по встрече — напоминание и ссылка", smallFont, new Point(padding, Height - smallFont.Height - padding / 2), Muted, TextFormatFlags.NoPrefix);
+            PaintMail(graphics);
+        }
+
+        private void PaintMail(Graphics graphics)
+        {
+            using (var pen = new Pen(Separator))
+            {
+                graphics.DrawLine(pen, padding, mailBounds.Y, Width - padding, mailBounds.Y);
+            }
+            int iconHeight = rowFont.Height * 2 / 3;
+            int iconWidth = iconHeight * 4 / 3;
+            var icon = new Rectangle(padding, mailBounds.Y + (mailBounds.Height - iconHeight) / 2, iconWidth, iconHeight);
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var pen = new Pen(Muted, 1.2f))
+            {
+                graphics.DrawRectangle(pen, icon);
+                graphics.DrawLines(pen, new[] { new Point(icon.Left, icon.Top), new Point(icon.Left + icon.Width / 2, icon.Top + icon.Height * 3 / 5), new Point(icon.Right, icon.Top) });
+            }
+            graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+            int textLeft = icon.Right + padding / 2;
+            int textRight = mailOpenBounds.IsEmpty ? Width - padding : mailOpenBounds.Left;
+            TextRenderer.DrawText(graphics, mailText ?? "", rowFont, new Rectangle(textLeft, mailBounds.Y, textRight - textLeft, mailBounds.Height), Muted, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            if (mailOpenBounds.IsEmpty) return;
+            using (Font open = hoverMail ? new Font(smallFont, FontStyle.Underline) : new Font(smallFont, FontStyle.Regular))
+            {
+                TextRenderer.DrawText(graphics, OpenText, open, mailOpenBounds, Link, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
+            }
         }
 
         private void PaintRow(Graphics graphics, Meeting meeting, Rectangle bounds, bool hovered)
@@ -191,25 +232,33 @@ namespace MeetingBell
             base.OnMouseMove(e);
             int row = RowAt(e.Location);
             bool overStatus = statusClickable && statusBounds.Contains(e.Location);
-            Cursor = row >= 0 || overStatus ? Cursors.Hand : Cursors.Default;
-            if (row == hoverRow && overStatus == hoverStatus) return;
+            bool overMail = !mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location);
+            Cursor = row >= 0 || overStatus || overMail ? Cursors.Hand : Cursors.Default;
+            if (row == hoverRow && overStatus == hoverStatus && overMail == hoverMail) return;
             hoverRow = row;
             hoverStatus = overStatus;
+            hoverMail = overMail;
             Invalidate();
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (hoverRow < 0 && !hoverStatus) return;
+            if (hoverRow < 0 && !hoverStatus && !hoverMail) return;
             hoverRow = -1;
             hoverStatus = false;
+            hoverMail = false;
             Invalidate();
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (!mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location))
+            {
+                if (MailClicked != null) MailClicked();
+                return;
+            }
             if (statusClickable && statusBounds.Contains(e.Location))
             {
                 if (StatusClicked != null) StatusClicked();

@@ -10,6 +10,7 @@ namespace MeetingBell
         public DateTime End;
         public string Location;
         public string Link;
+        public string Description;
         public bool IsAllDay;
 
         public string ReminderKey

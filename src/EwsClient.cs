@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Security;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 namespace MeetingBell
@@ -18,6 +19,7 @@ namespace MeetingBell
         private const int MaxEntries = 200;
         private const int MaxResponseBytes = 8 * 1024 * 1024;
         private const string DeclinedResponse = "Decline";
+        private const int MaxDescription = 4000;
 
         private readonly Uri endpoint;
         private readonly ExchangeCredential credential;
@@ -40,24 +42,24 @@ namespace MeetingBell
             return null;
         }
 
-        public string LinksProblem { get; private set; }
+        public string BodiesProblem { get; private set; }
 
         public List<Meeting> UnreadBodies { get; private set; }
 
         public List<Meeting> Day(DateTime localDay)
         {
-            LinksProblem = null;
+            BodiesProblem = null;
             UnreadBodies = new List<Meeting>();
             DateTime from = localDay.Date;
             DateTime to = from.AddDays(1);
             XmlDocument found = CheckResponse(Call(FindItemBody(from.ToUniversalTime(), to.ToUniversalTime())));
-            var withoutLinks = new Dictionary<string, Meeting>();
-            List<Meeting> meetings = ReadCalendarItems(found, withoutLinks);
-            if (withoutLinks.Count > 0) AddLinksFromBodies(withoutLinks);
+            var bodyRequests = new Dictionary<string, Meeting>();
+            List<Meeting> meetings = ReadCalendarItems(found, bodyRequests);
+            if (bodyRequests.Count > 0) ReadBodies(bodyRequests);
             return meetings;
         }
 
-        internal static List<Meeting> ReadCalendarItems(XmlDocument found, Dictionary<string, Meeting> withoutLinks)
+        internal static List<Meeting> ReadCalendarItems(XmlDocument found, Dictionary<string, Meeting> bodyRequests)
         {
             var meetings = new List<Meeting>();
             foreach (XmlElement item in found.GetElementsByTagName("CalendarItem", TypesNamespace))
@@ -67,7 +69,7 @@ namespace MeetingBell
                 if (meeting == null) continue;
                 meetings.Add(meeting);
                 string id = ItemId(item);
-                if (meeting.Link == null && id != null && !withoutLinks.ContainsKey(id)) withoutLinks[id] = meeting;
+                if (id != null && !bodyRequests.ContainsKey(id)) bodyRequests[id] = meeting;
             }
             meetings.Sort((left, right) => left.Start != right.Start ? left.Start.CompareTo(right.Start) : left.End.CompareTo(right.End));
             return meetings;
@@ -81,10 +83,42 @@ namespace MeetingBell
                 string id = ItemId(item);
                 Meeting meeting;
                 if (id == null || !meetings.TryGetValue(id, out meeting)) continue;
-                meeting.Link = MeetingLinks.Find(Text(item, "Body"));
+                string body = Text(item, "Body");
+                meeting.Description = Describe(body);
+                if (meeting.Link == null) meeting.Link = MeetingLinks.Find(body);
                 read.Add(id);
             }
             return read;
+        }
+
+        public int InboxUnread()
+        {
+            return ReadUnread(CheckResponse(Call("<m:GetFolder><m:FolderShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>"
+                + "<t:FieldURI FieldURI=\"folder:UnreadCount\"/></t:AdditionalProperties></m:FolderShape>"
+                + "<m:FolderIds><t:DistinguishedFolderId Id=\"inbox\"/></m:FolderIds></m:GetFolder>")));
+        }
+
+        internal static int ReadUnread(XmlDocument folder)
+        {
+            foreach (XmlElement count in folder.GetElementsByTagName("UnreadCount", TypesNamespace))
+            {
+                int unread;
+                if (int.TryParse(count.InnerText, NumberStyles.Integer, CultureInfo.InvariantCulture, out unread) && unread >= 0) return unread;
+            }
+            throw new CalendarException("Exchange не отдал число непрочитанных писем", false);
+        }
+
+        internal static string Describe(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return null;
+            string text = Regex.Replace(body.Replace("\r\n", "\n").Replace('\r', '\n'), "[ \t]+\n", "\n");
+            text = Regex.Replace(text, "\n{3,}", "\n\n").Trim();
+            if (text.Length > MaxDescription)
+            {
+                int cut = char.IsHighSurrogate(text[MaxDescription - 1]) ? MaxDescription - 1 : MaxDescription;
+                text = text.Substring(0, cut).TrimEnd() + "…";
+            }
+            return text.Length == 0 ? null : text.Replace("\n", Environment.NewLine);
         }
 
         internal static List<Meeting> Unread(Dictionary<string, Meeting> requested, HashSet<string> read)
@@ -97,7 +131,7 @@ namespace MeetingBell
             return unread;
         }
 
-        private void AddLinksFromBodies(Dictionary<string, Meeting> meetings)
+        private void ReadBodies(Dictionary<string, Meeting> meetings)
         {
             XmlDocument items;
             try
@@ -107,12 +141,12 @@ namespace MeetingBell
             catch (CalendarException error)
             {
                 if (error.IsAuthentication) throw;
-                LinksProblem = error.Message;
+                BodiesProblem = error.Message;
                 UnreadBodies.AddRange(meetings.Values);
                 return;
             }
             UnreadBodies.AddRange(Unread(meetings, ApplyBodies(items, meetings)));
-            if (UnreadBodies.Count > 0) LinksProblem = "Exchange не отдал текст приглашения у " + UnreadBodies.Count + " из " + meetings.Count + " встреч";
+            if (UnreadBodies.Count > 0) BodiesProblem = "Exchange не отдал текст приглашения у " + UnreadBodies.Count + " из " + meetings.Count + " встреч";
         }
 
         private static Meeting Parse(XmlElement item)

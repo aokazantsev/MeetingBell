@@ -36,6 +36,10 @@ namespace MeetingBell
                 KnownLinks();
                 Boundaries();
                 Credentials();
+                Mail();
+                NewMeetings();
+                Descriptions();
+                MoreNewMeetingsAndDescriptions();
                 LinkChoice();
             }
             finally
@@ -138,6 +142,140 @@ namespace MeetingBell
             var afterSnooze = new HashSet<string>();
             Check(restarted.Due(meetings, start.AddMinutes(2), 1, preferences, afterSnooze).Count == 1, "after restart a snoozed meeting reminds within the late limit");
             Check(restarted.Due(meetings, start.AddMinutes(6), 1, preferences, afterSnooze).Count == 0, "after restart late limit still applies");
+        }
+
+        private static void NewMeetings()
+        {
+            var now = new DateTime(2026, 11, 16, 14, 0, 0);
+            var previous = new List<Meeting> { At(now.AddHours(1), 30, "old") };
+            Meeting fresh = At(now.AddHours(2), 30, "new");
+            Meeting justStarted = At(now.AddMinutes(-30), 60, "started");
+            Meeting longAgo = At(now.AddMinutes(-31), 60, "past");
+            var allDay = new Meeting { Uid = "day", Start = now.Date, End = now.Date.AddDays(1), IsAllDay = true };
+            Meeting movedOld = At(now.AddHours(3), 30, "old");
+            List<Meeting> added = NewMeetingFinder.Find(now, previous, new List<Meeting> { previous[0], fresh, justStarted, longAgo, allDay, movedOld }, now);
+            Check(added.Count == 2 && added.Contains(fresh) && added.Contains(justStarted), "new meetings from 30 min ago on, known uid and all-day skipped");
+            Check(NewMeetingFinder.Find(now, previous, previous, now).Count == 0, "same list gives no notice");
+            Check(NewMeetingFinder.Find(now, previous, new List<Meeting> { At(now.AddMinutes(-25), 15, "ended") }, now).Count == 0, "meeting that already ended gives no notice");
+        }
+
+        private static void MoreNewMeetingsAndDescriptions()
+        {
+            var now = new DateTime(2026, 11, 16, 14, 0, 0);
+            var fresh = new List<Meeting> { At(now.AddHours(1), 30, "n") };
+            Check(NewMeetingFinder.Find(null, new List<Meeting>(), fresh, now).Count == 0, "first load of the day gives no notice");
+            Check(NewMeetingFinder.Find(now.AddMinutes(-1), new List<Meeting>(), fresh, now).Count == 1, "after a loaded list a new meeting gives a notice");
+            Check(NewMeetingFinder.Find(now, new List<Meeting>(), new List<Meeting> { At(now.AddMinutes(-20), 20, "edge") }, now).Count == 0, "meeting ending right now gives no notice");
+            var again = new Dictionary<string, Meeting> { { "X", At(now, 30, "x") }, { "Y", At(now, 30, "y") } };
+            XmlDocument partial = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("X", null, "", "", "", "<t:Body BodyType=\"Text\">   </t:Body>")
+                + "</m:Items></m:GetItemResponseMessage><m:GetItemResponseMessage ResponseClass=\"Error\"><m:ResponseCode>ErrorServerBusy</m:ResponseCode></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            Meeting oldX = At(now, 30, "x");
+            oldX.Description = "старое X";
+            Meeting oldY = At(now, 30, "y");
+            oldY.Description = "старое Y";
+            TrayApplication.KeepKnownLinks(EwsClient.Unread(again, EwsClient.ApplyBodies(partial, again)), new List<Meeting> { oldX, oldY });
+            Check(again["X"].Description == null && again["Y"].Description == "старое Y", "cleared invitation text drops description, unread keeps it");
+            string NL = Environment.NewLine;
+            Check(EwsClient.Describe(new string('x', 3995) + "     yyyy") == new string('x', 3995) + "…", "cut trims trailing spaces before ellipsis");
+            Check(EwsClient.Describe("a\t\r\rb\n\n\n\nc") == "a" + NL + NL + "b" + NL + NL + "c", "lone CR and tabs normalized");
+            var cache = new TodayCache { Day = DateTime.Today, Fetched = DateTime.Today };
+            cache.Meetings.Add(new Meeting { Uid = "q", Start = DateTime.Today, End = DateTime.Today.AddHours(1), Description = "a\"b\\c\td\u0001e" });
+            cache.Save();
+            Check(TodayCache.Load(DateTime.Today, line => { }).Meetings[0].Description == "a\"b\\c\td\u0001e", "description with quotes and control chars survives");
+            File.WriteAllText(TodayCache.FilePath, "{\"day\": \"" + DateTime.Today.ToString("yyyy-MM-dd") + "\", \"fetched\": \"\", \"meetings\": [{\"uid\": \"o\", \"start\": \"" + DateTime.Today.ToString("o") + "\", \"end\": \"" + DateTime.Today.AddHours(1).ToString("o") + "\"}], \"shown\": []}");
+            TodayCache old = TodayCache.Load(DateTime.Today, line => { });
+            Check(old.Meetings.Count == 1 && old.Meetings[0].Description == null, "old today file without description loads");
+        }
+
+        private static void Descriptions()
+        {
+            string text = EwsClient.Describe("Повестка  \r\n\r\n\r\n\r\nПереговорная 5\r\n");
+            Check(text == "Повестка" + Environment.NewLine + Environment.NewLine + "Переговорная 5", "description trimmed and blank lines collapsed");
+            Check(EwsClient.Describe("   \r\n ") == null && EwsClient.Describe(null) == null, "empty body gives no description");
+            Check(EwsClient.Describe(new string('x', 5000)).Length == 4001, "long body cut to the limit");
+            var withLink = new Meeting { Uid = "l", Link = "https://zoom.us/j/own", Start = DateTime.Today, End = DateTime.Today.AddHours(1) };
+            var requested = new Dictionary<string, Meeting> { { "L", withLink } };
+            XmlDocument body = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("L", null, "", "", "", "<t:Body BodyType=\"Text\">Кабинет 12 https://teams.microsoft.com/l/x</t:Body>")
+                + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            EwsClient.ApplyBodies(body, requested);
+            Check(withLink.Link == "https://zoom.us/j/own" && withLink.Description.StartsWith("Кабинет 12"), "body gives description, location link kept");
+            var unreadMeeting = At(DateTime.Today, 30, "d");
+            var known = At(DateTime.Today, 30, "d");
+            known.Description = "Старое описание";
+            TrayApplication.KeepKnownLinks(new List<Meeting> { unreadMeeting }, new List<Meeting> { known });
+            Check(unreadMeeting.Description == "Старое описание", "known description kept when body did not arrive");
+            var cache = new TodayCache { Day = DateTime.Today, Fetched = DateTime.Today };
+            cache.Meetings.Add(new Meeting { Uid = "c", Start = DateTime.Today, End = DateTime.Today.AddHours(1), Description = "Строка 1" + Environment.NewLine + "Строка 2" });
+            cache.Meetings.Add(new Meeting { Uid = "e", Start = DateTime.Today, End = DateTime.Today.AddHours(1) });
+            cache.Save();
+            TodayCache loaded = TodayCache.Load(DateTime.Today, line => { });
+            Check(loaded.Meetings[0].Description == "Строка 1" + Environment.NewLine + "Строка 2" && loaded.Meetings[1].Description == null, "description survives restart");
+        }
+
+        private static void Mail()
+        {
+            Check(TrayApplication.MailText(null) == "Почта ещё не загружена" && TrayApplication.MailText(0) == "Новых писем нет", "mail text without count");
+            Check(TrayApplication.MailText(1) == "У вас 1 новое письмо" && TrayApplication.MailText(3) == "У вас 3 новых письма" && TrayApplication.MailText(5) == "У вас 5 новых писем", "mail plural 1/3/5");
+            Check(TrayApplication.MailText(11) == "У вас 11 новых писем" && TrayApplication.MailText(21) == "У вас 21 новое письмо" && TrayApplication.MailText(112) == "У вас 112 новых писем", "mail plural 11/21/112");
+            Check(TrayApplication.MailLine(4, null) == "У вас 4 новых письма" && TrayApplication.MailLine(4, "сбой") == "У вас 4 новых письма · не обновлено" && TrayApplication.MailLine(null, "нет прав") == "Почта не загружена: нет прав", "mail line shows stale and failed state");
+            var full = new AppSettings { EwsUrl = "https://a.example/EWS/Exchange.asmx", VpnAdapters = new List<string> { "Wg" }, LeadMinutes = 7, CalendarMinutes = 2, MailMinutes = 3, MailUrl = "https://m.example/owa" };
+            AppSettings copy = full.Clone();
+            Check(copy.EwsUrl == full.EwsUrl && copy.VpnAdapters[0] == "Wg" && !ReferenceEquals(copy.VpnAdapters, full.VpnAdapters) && copy.LeadMinutes == 7 && copy.CalendarMinutes == 2 && copy.MailMinutes == 3 && copy.MailUrl == "https://m.example/owa", "clone keeps every setting");
+            Check(new AppSettings { EwsUrl = "not a url" }.WebMailUrl == null && new AppSettings { EwsUrl = "not a url", MailUrl = "https://m.example/" }.WebMailUrl == "https://m.example/", "web mail with broken EWS address");
+            Check(new AppSettings { EwsUrl = "https://Mail.Example.com:8443/EWS/Exchange.asmx" }.WebMailUrl == "https://mail.example.com:8443/owa/#path=/mail", "web mail keeps port");
+            bool denied = false;
+            try
+            {
+                EwsClient.CheckResponse(Xml("<m:GetFolderResponse><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass=\"Error\"><m:MessageText>denied</m:MessageText><m:ResponseCode>ErrorAccessDenied</m:ResponseCode></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"));
+            }
+            catch (CalendarException error)
+            {
+                denied = !error.IsAuthentication && error.Message.Contains("ErrorAccessDenied");
+            }
+            Check(denied, "inbox error response reported with its code");
+            Check(EwsClient.ReadUnread(Xml("<t:UnreadCount>0</t:UnreadCount>")) == 0, "zero unread parsed");
+            bool negative = false;
+            try
+            {
+                EwsClient.ReadUnread(Xml("<t:UnreadCount>-1</t:UnreadCount>"));
+            }
+            catch (CalendarException)
+            {
+                negative = true;
+            }
+            Check(negative, "negative unread rejected");
+            File.WriteAllText(AppSettings.FilePath, "calendarMinutes=99999\nmailMinutes=-3\nmailUrl=https://u:p@host/\n");
+            AppSettings bounds = AppSettings.Load();
+            Check(bounds.CalendarMinutes == AppSettings.MaxRefreshMinutes && bounds.MailMinutes == 1 && bounds.MailUrl == "", "refresh upper and lower bounds, mail url with credentials dropped");
+            File.Delete(AppSettings.FilePath);
+            var derived = new AppSettings { EwsUrl = "https://mail.example.com/EWS/Exchange.asmx" };
+            Check(derived.WebMailUrl == "https://mail.example.com/owa/#path=/mail", "web mail derived from EWS host");
+            var custom = new AppSettings { MailUrl = "https://outlook.example.org/mail" };
+            Check(custom.WebMailUrl == "https://outlook.example.org/mail", "custom web mail wins");
+            XmlDocument folder = Xml("<m:GetFolderResponse><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:Folders><t:Folder><t:FolderId Id=\"F\"/><t:UnreadCount>7</t:UnreadCount></t:Folder></m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>");
+            Check(EwsClient.ReadUnread(EwsClient.CheckResponse(folder)) == 7, "inbox unread parsed");
+            bool thrown = false;
+            try
+            {
+                EwsClient.ReadUnread(Xml("<m:GetFolderResponse/>"));
+            }
+            catch (CalendarException)
+            {
+                thrown = true;
+            }
+            Check(thrown, "missing unread count is an error");
+            File.WriteAllText(AppSettings.FilePath, "calendarMinutes=0\nmailMinutes=abc\nmailUrl=javascript:x\n");
+            AppSettings parsed = AppSettings.Load();
+            Check(parsed.CalendarMinutes == 1 && parsed.MailMinutes == AppSettings.DefaultRefreshMinutes && parsed.MailUrl == "", "refresh minutes clamped, bad mail url dropped");
+            parsed.CalendarMinutes = 2;
+            parsed.MailMinutes = 3;
+            parsed.MailUrl = "https://m.example/owa";
+            parsed.Save();
+            AppSettings again = AppSettings.Load();
+            Check(again.CalendarMinutes == 2 && again.MailMinutes == 3 && again.MailUrl == "https://m.example/owa", "refresh and mail settings survive");
+            File.Delete(AppSettings.FilePath);
         }
 
         private static void Credentials()
@@ -322,7 +460,7 @@ namespace MeetingBell
             Check(meetings.Count == 3 && meetings[0].IsAllDay && meetings[1].Uid == "X" && meetings[2].Uid == "uid-late", "sorted by start, item id replaces missing uid");
             Check(meetings.Count == 3 && meetings[1].Start == new DateTime(2026, 11, 16, 11, 0, 0, DateTimeKind.Utc).ToLocalTime(), "utc start converted to local time");
             Check(meetings.Count == 3 && meetings[2].Link == "https://zoom.us/j/9" && meetings[1].Link == null, "link from location");
-            Check(withoutLinks.ContainsKey("X") && !withoutLinks.ContainsKey("A"), "only meetings without link go to body fetch");
+            Check(withoutLinks.ContainsKey("X") && withoutLinks.ContainsKey("A"), "every meeting goes to body fetch for its description");
             XmlDocument bodies = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Error\"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode></m:GetItemResponseMessage>"
                 + "<m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>" + Item("X", null, "", "", "", "<t:Body BodyType=\"Text\">Join https://example.com/doc https://zoom.us/j/1</t:Body>")
                 + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
@@ -437,7 +575,7 @@ namespace MeetingBell
                 {
                     Console.WriteLine(meeting.Start.ToString("HH:mm") + "-" + meeting.End.ToString("HH:mm") + " allDay=" + meeting.IsAllDay
                         + " uid=" + (meeting.Uid ?? "").Length + " link=" + (meeting.Link == null ? "none" : new Uri(meeting.Link).Host)
-                        + " location=" + (string.IsNullOrEmpty(meeting.Location) ? "empty" : "set"));
+                        + " location=" + (string.IsNullOrEmpty(meeting.Location) ? "empty" : "set") + " description=" + (meeting.Description == null ? 0 : meeting.Description.Length));
                 }
             }
             catch (CalendarException error)

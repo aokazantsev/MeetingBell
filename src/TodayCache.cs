@@ -74,6 +74,7 @@ namespace MeetingBell
                     { "end", meeting.End.ToString(TimeFormat, CultureInfo.InvariantCulture) },
                     { "location", meeting.Location ?? "" },
                     { "link", meeting.Link ?? "" },
+                    { "description", meeting.Description ?? "" },
                     { "allDay", meeting.IsAllDay }
                 });
             }
@@ -96,6 +97,7 @@ namespace MeetingBell
             string uid = Text(entry, "uid");
             if (string.IsNullOrEmpty(uid)) return null;
             string link = Text(entry, "link");
+            string description = Text(entry, "description");
             object allDay;
             return new Meeting
             {
@@ -105,6 +107,7 @@ namespace MeetingBell
                 End = end,
                 Location = Text(entry, "location"),
                 Link = MeetingLinks.IsWebLink(link) ? link : null,
+                Description = string.IsNullOrEmpty(description) ? null : description,
                 IsAllDay = entry.TryGetValue("allDay", out allDay) && allDay is bool && (bool)allDay
             };
         }

@@ -18,6 +18,9 @@ namespace MeetingBell
         private readonly Label testResult = new Label { AutoSize = true, UseMnemonic = false };
         private readonly ComboBox vpnBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
         private readonly NumericUpDown leadBox = new NumericUpDown { Minimum = 0, Maximum = AppSettings.MaxLeadMinutes, Width = 60 };
+        private readonly NumericUpDown calendarBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxRefreshMinutes, Width = 60 };
+        private readonly NumericUpDown mailBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxRefreshMinutes, Width = 60 };
+        private readonly TextBox mailUrlBox = new TextBox();
         private readonly CheckBox autoUpdateBox = new CheckBox { Text = "Проверять обновление раз в сутки", AutoSize = true };
         private readonly CheckBox usageBox = new CheckBox { Text = "Отправлять автору анонимную статистику использования", AutoSize = true };
         private int testGeneration;
@@ -89,6 +92,15 @@ namespace MeetingBell
             leadRow.Controls.Add(new Label { Text = "мин до начала (0 — в момент начала)", AutoSize = true, Margin = new Padding(unit / 3, unit / 3, 0, 0) });
             AddRow(layout, "Напоминать за:", leadRow, "У отдельной встречи время меняется в списке: наведи на значок и нажми на встречу.");
 
+            AddSection(layout, "Обновление и почта");
+            calendarBox.Value = settings.CalendarMinutes;
+            AddRow(layout, "Календарь:", MinutesRow(calendarBox, "раз в столько минут"), null);
+            mailBox.Value = settings.MailMinutes;
+            AddRow(layout, "Почта:", MinutesRow(mailBox, "раз в столько минут"), "Число непрочитанных писем во «Входящих» (без подпапок) — внизу списка.");
+            mailUrlBox.Width = fieldWidth;
+            mailUrlBox.Text = settings.MailUrl;
+            AddRow(layout, "Веб-почта:", mailUrlBox, "Адрес для кнопки «Открыть». Пусто — https://<сервер EWS>/owa/#path=/mail");
+
             AddSection(layout, "Программа");
             autoUpdateBox.Checked = AutoUpdateCheck.IsEnabled;
             usageBox.Checked = UsageConsent.IsGiven;
@@ -107,6 +119,15 @@ namespace MeetingBell
             Controls.Add(layout);
             AcceptButton = save;
             CancelButton = cancel;
+        }
+
+        private static FlowLayoutPanel MinutesRow(NumericUpDown box, string caption)
+        {
+            int unit = SystemFonts.MessageBoxFont.Height;
+            var row = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0) };
+            row.Controls.Add(box);
+            row.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(unit / 3, unit / 3, 0, 0) });
+            return row;
         }
 
         private static void AddSection(TableLayoutPanel layout, string title)
@@ -212,6 +233,13 @@ namespace MeetingBell
                 urlBox.Focus();
                 return;
             }
+            string mailUrl = mailUrlBox.Text.Trim();
+            if (mailUrl.Length > 0 && !MeetingLinks.IsWebLink(mailUrl))
+            {
+                MessageBox.Show(this, "Адрес веб-почты должен начинаться с https:// или http://.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                mailUrlBox.Focus();
+                return;
+            }
             CredentialChoice choice = EnteredCredential();
             if (choice.Problem != null)
             {
@@ -225,6 +253,9 @@ namespace MeetingBell
             result.EwsUrl = url;
             result.VpnAdapters = AppSettings.ParseList(vpnBox.Text);
             result.LeadMinutes = (int)leadBox.Value;
+            result.CalendarMinutes = (int)calendarBox.Value;
+            result.MailMinutes = (int)mailBox.Value;
+            result.MailUrl = mailUrlBox.Text.Trim();
             Result = result;
             AutoUpdateChosen = autoUpdateBox.Checked;
             UsageStatisticsChosen = usageBox.Checked;

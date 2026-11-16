@@ -17,6 +17,11 @@ namespace MeetingBell
         private const string EwsUrlKey = "ewsUrl";
         private const string VpnAdaptersKey = "vpnAdapters";
         private const string LeadMinutesKey = "leadMinutes";
+        private const string CalendarMinutesKey = "calendarMinutes";
+        private const string MailMinutesKey = "mailMinutes";
+        private const string MailUrlKey = "mailUrl";
+        public const int DefaultRefreshMinutes = 5;
+        public const int MaxRefreshMinutes = 1440;
         private const char KeyValueSeparator = '=';
         private const char ListSeparator = '|';
         private const int ReadAttempts = 5;
@@ -29,6 +34,9 @@ namespace MeetingBell
         public string EwsUrl = DefaultEwsUrl;
         public List<string> VpnAdapters = new List<string> { DefaultVpnAdapter };
         public int LeadMinutes = DefaultLeadMinutes;
+        public int CalendarMinutes = DefaultRefreshMinutes;
+        public int MailMinutes = DefaultRefreshMinutes;
+        public string MailUrl = "";
         public string ReadError;
         public bool ReadDenied;
 
@@ -101,7 +109,10 @@ namespace MeetingBell
             {
                 EwsUrl = EwsUrl,
                 VpnAdapters = new List<string>(VpnAdapters),
-                LeadMinutes = LeadMinutes
+                LeadMinutes = LeadMinutes,
+                CalendarMinutes = CalendarMinutes,
+                MailMinutes = MailMinutes,
+                MailUrl = MailUrl
             };
         }
 
@@ -111,6 +122,9 @@ namespace MeetingBell
             AppendLine(content, EwsUrlKey, EwsUrl);
             AppendLine(content, VpnAdaptersKey, JoinList(VpnAdapters));
             AppendLine(content, LeadMinutesKey, LeadMinutes.ToString(CultureInfo.InvariantCulture));
+            AppendLine(content, CalendarMinutesKey, CalendarMinutes.ToString(CultureInfo.InvariantCulture));
+            AppendLine(content, MailMinutesKey, MailMinutes.ToString(CultureInfo.InvariantCulture));
+            AppendLine(content, MailUrlKey, MailUrl);
             string temporary = FilePath + ".tmp";
             try
             {
@@ -139,6 +153,17 @@ namespace MeetingBell
             return problem;
         }
 
+        public string WebMailUrl
+        {
+            get
+            {
+                if (MeetingLinks.IsWebLink(MailUrl)) return MailUrl;
+                Uri ews;
+                if (!Uri.TryCreate(EwsUrl, UriKind.Absolute, out ews)) return null;
+                return ews.GetLeftPart(UriPartial.Authority) + "/owa/#path=/mail";
+            }
+        }
+
         public static List<string> ParseList(string value)
         {
             var items = new List<string>();
@@ -160,6 +185,9 @@ namespace MeetingBell
             if (Is(key, EwsUrlKey)) EwsUrl = value.Length == 0 ? DefaultEwsUrl : value;
             else if (Is(key, VpnAdaptersKey)) VpnAdapters = ParseList(value);
             else if (Is(key, LeadMinutesKey)) LeadMinutes = ParseInt(value, DefaultLeadMinutes, 0, MaxLeadMinutes);
+            else if (Is(key, CalendarMinutesKey)) CalendarMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxRefreshMinutes);
+            else if (Is(key, MailMinutesKey)) MailMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxRefreshMinutes);
+            else if (Is(key, MailUrlKey)) MailUrl = MeetingLinks.IsWebLink(value) ? value : "";
         }
 
         private static int ParseInt(string value, int fallback, int min, int max)
