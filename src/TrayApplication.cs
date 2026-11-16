@@ -94,7 +94,7 @@ namespace MeetingBell
             trayIcon.ContextMenuStrip = new ContextMenuStrip();
             trayIcon.ContextMenuStrip.Opening += OnMenuOpening;
             trayIcon.MouseClick += OnTrayMouseClick;
-            trayIcon.MouseDoubleClick += OnTrayDoubleClick;
+            trayIcon.MouseDoubleClick += OnTrayMouseClick;
             trayIcon.BalloonTipClicked += OnBalloonClicked;
             listForm.MeetingClicked += OnMeetingClicked;
             listForm.StatusClicked += OnStatusClicked;
@@ -1022,14 +1022,6 @@ namespace MeetingBell
             if (next == null) return cache.Fetched.HasValue || cache.Meetings.Count > 0 ? "Созвонов на сегодня больше нет" : "Список созвонов не загружен";
             string subject = next.DisplaySubject.Length > 50 ? next.DisplaySubject.Substring(0, 49) + "…" : next.DisplaySubject;
             return (next.IsGoing(now) ? "Идёт: " : "Следующий: ") + next.Start.ToString("HH:mm") + " " + subject;
-        }
-
-        private void OnTrayDoubleClick(object sender, MouseEventArgs e)
-        {
-            if (e.Button != MouseButtons.Left) return;
-            Usage.Hit("tray.double_click");
-            HideList();
-            ShowSettings(null);
         }
 
         private void ShowSettings(string intro)
