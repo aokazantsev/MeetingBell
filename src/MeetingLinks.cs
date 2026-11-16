@@ -7,7 +7,7 @@ namespace MeetingBell
 {
     internal static class MeetingLinks
     {
-        private static readonly Regex UrlPattern = new Regex(@"https?://[^\s<>""'\]\)]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex UrlPattern = new Regex(@"https?://[^\s<>""'\]\)«»“”„…\u200B-\u200F\u202A-\u202E\u2066-\u2069]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private static readonly string[] ConferenceHosts =
         {
             "zoom.us", "zoom.com", "teams.microsoft.com", "teams.live.com", "meet.google.com", "telemost.yandex.ru",

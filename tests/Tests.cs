@@ -245,6 +245,14 @@ namespace MeetingBell
             Check(reloaded.Meetings[0].Organizer == "Анна <anna@example.com>" && reloaded.Meetings[0].RequiredAttendees == "Боб \"шеф\"" && reloaded.Meetings[0].OptionalAttendees == null && reloaded.Meetings[1].Organizer == null, "people survive restart");
             var morning = new Meeting { Start = new DateTime(2026, 11, 16, 11, 30, 0), End = new DateTime(2026, 11, 16, 12, 0, 0) };
             Check(DescriptionForm.When(morning) == "понедельник, 16 ноября, 11:30–12:00", "card time line");
+            int hiddenPeople;
+            Check(DescriptionForm.Collapse("Ян <y@example.com>", out hiddenPeople) == "Ян <y@example.com>" && hiddenPeople == 0, "short people line shown whole");
+            Check(DescriptionForm.Collapse("Ян <y@ex.ru>; Ли <l@ex.ru>; Бо <b@ex.ru>; Ге <g@ex.ru>", out hiddenPeople) == "Ян <y@ex.ru>; Ли <l@ex.ru>" && hiddenPeople == 2, "whole names up to 30 chars, rest counted");
+            Check(DescriptionForm.Collapse("Иван Смирнов <ivan.smirnov@example.com>; Ли <l@ex.ru>; и ещё 34", out hiddenPeople) == "Иван Смирнов <ivan.smirnov@ex…" && hiddenPeople == 35, "long first name cut, server overflow added");
+            Check(DescriptionForm.Collapse("Команда платежей <payments@example.com>", out hiddenPeople).EndsWith("…") && hiddenPeople == 0, "single long name cut without count");
+            int overflow;
+            List<string> split = DescriptionForm.SplitPeople("А; Б; и ещё 7", out overflow);
+            Check(split.Count == 2 && overflow == 7 && DescriptionForm.SplitPeople("и ещё кто-то", out overflow).Count == 1 && overflow == 0, "server overflow tail parsed only as number");
             Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16), End = new DateTime(2026, 11, 17), IsAllDay = true }) == "понедельник, 16 ноября, весь день", "card all-day line");
         }
 
@@ -370,6 +378,8 @@ namespace MeetingBell
             Check(found.Count == 2 && found[0].Url == "https://wiki.example.com/a?b=1" && found[0].Start == 5 && found[0].Length == 30 && found[1].Url == "http://f.example/g", "description links: only http(s) without login, trailing dot and bracket cut");
             Check(found[0].Contains(5) && found[0].Contains(34) && !found[0].Contains(35) && !found[0].Contains(4), "link range bounds");
             Check(MeetingLinks.WebLinks(null).Count == 0 && MeetingLinks.WebLinks("нет ссылок").Count == 0, "no links in empty text");
+            List<TextLink> quoted = MeetingLinks.WebLinks("См. «https://wiki.example.com/a» и https://b.example/c… и https://evil.example/" + (char)0x202E + "moc.knab");
+            Check(quoted.Count == 3 && quoted[0].Url == "https://wiki.example.com/a" && quoted[1].Url == "https://b.example/c" && quoted[2].Url == "https://evil.example/", "link stops at russian quotes, ellipsis and direction marks");
             Check(MeetingLinks.DisplayHost("https://rooms.example.com/5") == "rooms.example.com", "ascii host shown as is");
             var again = new Dictionary<string, Meeting> { { "X", At(DateTime.Today, 30, "x") }, { "Y", At(DateTime.Today, 30, "y") } };
             Meeting oldX = At(DateTime.Today, 30, "x");
