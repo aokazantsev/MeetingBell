@@ -33,7 +33,7 @@ namespace MeetingBell
 
         public bool HasDetails
         {
-            get { return Description != null || Organizer != null || RequiredAttendees != null || OptionalAttendees != null; }
+            get { return Description != null || RequiredAttendees != null || OptionalAttendees != null; }
         }
 
         public bool IsGoing(DateTime now)

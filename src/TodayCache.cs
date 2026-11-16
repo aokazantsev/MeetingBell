@@ -110,7 +110,7 @@ namespace MeetingBell
                 End = end,
                 Location = Text(entry, "location"),
                 Link = MeetingLinks.IsWebLink(link) ? link : null,
-                Description = string.IsNullOrEmpty(description) ? null : description,
+                Description = Optional(description),
                 Organizer = Optional(Text(entry, "organizer")),
                 RequiredAttendees = Optional(Text(entry, "required")),
                 OptionalAttendees = Optional(Text(entry, "optional")),

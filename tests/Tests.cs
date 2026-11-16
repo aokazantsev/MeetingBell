@@ -246,6 +246,16 @@ namespace MeetingBell
             Check(reloaded.Meetings[0].Organizer == "Анна <anna@example.com>" && reloaded.Meetings[0].RequiredAttendees == "Боб \"шеф\"" && reloaded.Meetings[0].OptionalAttendees == "Ли" && reloaded.Meetings[1].Organizer == null, "people survive restart");
             var morning = new Meeting { Start = new DateTime(2026, 11, 16, 11, 30, 0), End = new DateTime(2026, 11, 16, 12, 0, 0) };
             Check(DescriptionForm.When(morning) == "понедельник, 16 ноября, 11:30–12:00", "card time line");
+            Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16, 23, 30, 0), End = new DateTime(2026, 11, 17, 0, 0, 0) }) == "понедельник, 16 ноября, 23:30–00:00", "card ending at midnight stays one day");
+            Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16, 23, 30, 0), End = new DateTime(2026, 11, 17, 0, 30, 0) }) == "понедельник, 16 ноября, 23:30 – вторник, 17 ноября, 00:30", "card over midnight shows end day");
+            Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16), End = new DateTime(2026, 11, 19), IsAllDay = true }) == "понедельник, 16 ноября – среда, 18 ноября, весь день", "multi-day all-day card");
+            var batchInput = new Dictionary<string, Meeting>();
+            for (int index = 0; index < 45; index++) batchInput["id" + index] = At(DateTime.Today, 30, "b" + index);
+            List<Dictionary<string, Meeting>> batches = EwsClient.Batches(batchInput, 20);
+            Check(batches.Count == 3 && batches[0].Count == 20 && batches[2].Count == 5 && batches[2].ContainsKey("id44") && EwsClient.Batches(new Dictionary<string, Meeting>(), 20).Count == 0, "invitation texts requested in batches of 20");
+            var organizerOnly = At(DateTime.Today, 30, "o");
+            organizerOnly.Organizer = "Я";
+            Check(!organizerOnly.HasDetails, "organizer alone does not enable description");
             int hiddenPeople;
             Check(DescriptionForm.Collapse("Ян <y@example.com>", out hiddenPeople) == "Ян <y@example.com>" && hiddenPeople == 0, "short people line shown whole");
             Check(DescriptionForm.Collapse("Ян <y@ex.ru>; Ли <l@ex.ru>; Бо <b@ex.ru>; Ге <g@ex.ru>", out hiddenPeople) == "Ян <y@ex.ru>; Ли <l@ex.ru>" && hiddenPeople == 2, "whole names up to 30 chars, rest counted");

@@ -11,7 +11,6 @@ namespace MeetingBell
         private const string ExpandTarget = "#expand:";
         private const string CollapseTarget = "#collapse:";
         private const int CollapsedLength = 30;
-        private const string MorePrefix = "и ещё ";
         private static readonly Color LinkColor = Color.FromArgb(0, 102, 204);
         private static readonly Color Muted = Color.FromArgb(110, 110, 110);
         private static readonly CultureInfo Russian = new CultureInfo("ru-RU");
@@ -59,10 +58,24 @@ namespace MeetingBell
             };
         }
 
+        public Meeting Meeting
+        {
+            get { return meeting; }
+        }
+
         internal static string When(Meeting meeting)
         {
             string day = meeting.Start.ToString("dddd, d MMMM", Russian);
-            return meeting.IsAllDay ? day + ", весь день" : day + ", " + meeting.Start.ToString("HH:mm") + "–" + meeting.End.ToString("HH:mm");
+            if (meeting.IsAllDay)
+            {
+                DateTime last = meeting.End.Date.AddDays(-1);
+                return last > meeting.Start.Date ? day + " – " + last.ToString("dddd, d MMMM", Russian) + ", весь день" : day + ", весь день";
+            }
+            if (meeting.End > meeting.Start.Date.AddDays(1))
+            {
+                return day + ", " + meeting.Start.ToString("HH:mm") + " – " + meeting.End.ToString("dddd, d MMMM, HH:mm", Russian);
+            }
+            return day + ", " + meeting.Start.ToString("HH:mm") + "–" + meeting.End.ToString("HH:mm");
         }
 
         internal static List<string> SplitPeople(string value, out int more)
@@ -71,7 +84,7 @@ namespace MeetingBell
             var people = new List<string>(value.Split(new[] { "; " }, StringSplitOptions.RemoveEmptyEntries));
             int last = people.Count - 1;
             int tail;
-            if (last >= 0 && people[last].StartsWith(MorePrefix) && int.TryParse(people[last].Substring(MorePrefix.Length), out tail))
+            if (last >= 0 && people[last].StartsWith(EwsClient.MorePrefix) && int.TryParse(people[last].Substring(EwsClient.MorePrefix.Length), out tail))
             {
                 more = tail;
                 people.RemoveAt(last);
@@ -162,7 +175,7 @@ namespace MeetingBell
             else
             {
                 Append(collapsed, Font, ForeColor);
-                Toggle(hidden > 0 ? MorePrefix + hidden : "показать полностью", ExpandTarget + label, toggles);
+                Toggle(hidden > 0 ? EwsClient.MorePrefix + hidden : "показать полностью", ExpandTarget + label, toggles);
             }
             Append("\n", Font, ForeColor);
         }

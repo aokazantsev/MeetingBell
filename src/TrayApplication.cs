@@ -206,7 +206,7 @@ namespace MeetingBell
                 if (vpn) RequestRefresh();
                 vpnUp = vpn;
             }
-            if (vpn && HasCredential && !authenticationFailed && !fetching && now >= nextRefresh) StartFetch(now);
+            if (vpn && HasCredential && !authenticationFailed && !fetching && !mailFetching && now >= nextRefresh) StartFetch(now);
             if (vpn && HasCredential && !authenticationFailed && accessConfirmed && !fetching && !mailFetching && now >= nextMailRefresh) StartMailFetch();
             ShowDueReminders(now);
             UpdateTray();
@@ -596,7 +596,7 @@ namespace MeetingBell
         private void PopulateList()
         {
             DateTime now = DateTime.Now;
-            listForm.Populate(cache.Meetings, now, CurrentStatus(), Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null);
+            listForm.Populate(cache.Meetings, now, CurrentStatus(), Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null, listAnchor);
             if (listForm.Visible) listForm.ShowNear(listAnchor);
         }
 
@@ -725,8 +725,12 @@ namespace MeetingBell
             DescriptionForm open;
             if (descriptions.TryGetValue(meeting.ReminderKey, out open))
             {
-                open.Activate();
-                return;
+                if (open.Meeting == meeting)
+                {
+                    open.Activate();
+                    return;
+                }
+                open.Close();
             }
             var form = new DescriptionForm(meeting);
             descriptions[meeting.ReminderKey] = form;
@@ -904,7 +908,6 @@ namespace MeetingBell
             Usage.Hit("settings.save");
             AppLog.Append("settings: ews host=" + EwsHost(settings.EwsUrl) + ", vpn adapters=" + (settings.ChecksVpn ? AppSettings.JoinList(settings.VpnAdapters) : "not checked") + ", lead=" + settings.LeadMinutes);
             vpnUp = null;
-            UpdateUsageState();
             if (accountChanged)
             {
                 cache.Fetched = null;
@@ -912,6 +915,7 @@ namespace MeetingBell
                 SaveCache();
                 mailUnread = null;
             }
+            UpdateUsageState();
             if (accessChanged) RefreshNow(true);
             else Tick();
             if (problems.Count > 0) MessageBox.Show(string.Join(Environment.NewLine + Environment.NewLine, problems.ToArray()), AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);

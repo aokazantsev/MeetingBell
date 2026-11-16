@@ -85,7 +85,7 @@ namespace MeetingBell
             }
         }
 
-        public void Populate(List<Meeting> list, DateTime current, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen)
+        public void Populate(List<Meeting> list, DateTime current, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen, Point anchor)
         {
             mailText = mail;
             mailAction = mailCanOpen ? OpenText : null;
@@ -93,7 +93,7 @@ namespace MeetingBell
             now = current;
             status = listStatus;
             describe = description;
-            Arrange(Screen.FromPoint(Cursor.Position).WorkingArea.Height - ScreenMargin * 2);
+            Arrange(Screen.FromPoint(anchor).WorkingArea.Height - ScreenMargin * 2);
             Invalidate();
         }
 

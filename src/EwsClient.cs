@@ -21,6 +21,8 @@ namespace MeetingBell
         private const string DeclinedResponse = "Decline";
         private const int MaxDescription = 4000;
         private const int MaxPeople = 50;
+        private const int BodyBatch = 20;
+        internal const string MorePrefix = "и ещё ";
         private const int MaxPersonLength = 120;
 
         private readonly Uri endpoint;
@@ -113,7 +115,7 @@ namespace MeetingBell
             throw new CalendarException("Exchange не отдал число непрочитанных писем", false);
         }
 
-        internal static string People(XmlElement item, string field)
+        private static string People(XmlElement item, string field)
         {
             var names = new List<string>();
             int total = 0;
@@ -130,7 +132,7 @@ namespace MeetingBell
             }
             if (names.Count == 0) return null;
             string joined = string.Join("; ", names.ToArray());
-            return total > names.Count ? joined + "; и ещё " + (total - names.Count) : joined;
+            return total > names.Count ? joined + "; " + MorePrefix + (total - names.Count) : joined;
         }
 
         private static string Person(string name, string email)
@@ -170,20 +172,35 @@ namespace MeetingBell
 
         private void ReadBodies(Dictionary<string, Meeting> meetings)
         {
-            XmlDocument items;
-            try
+            string failure = null;
+            foreach (Dictionary<string, Meeting> batch in Batches(meetings, BodyBatch))
             {
-                items = Call(GetItemBody(meetings.Keys));
+                XmlDocument items;
+                try
+                {
+                    items = Call(GetItemBody(batch.Keys));
+                }
+                catch (CalendarException error)
+                {
+                    if (error.IsAuthentication) throw;
+                    failure = error.Message;
+                    UnreadBodies.AddRange(batch.Values);
+                    continue;
+                }
+                UnreadBodies.AddRange(Unread(batch, ApplyBodies(items, batch)));
             }
-            catch (CalendarException error)
+            if (UnreadBodies.Count > 0) BodiesProblem = failure ?? "Exchange не отдал текст приглашения у " + UnreadBodies.Count + " из " + meetings.Count + " встреч";
+        }
+
+        internal static List<Dictionary<string, Meeting>> Batches(Dictionary<string, Meeting> meetings, int size)
+        {
+            var batches = new List<Dictionary<string, Meeting>>();
+            foreach (KeyValuePair<string, Meeting> pair in meetings)
             {
-                if (error.IsAuthentication) throw;
-                BodiesProblem = error.Message;
-                UnreadBodies.AddRange(meetings.Values);
-                return;
+                if (batches.Count == 0 || batches[batches.Count - 1].Count >= size) batches.Add(new Dictionary<string, Meeting>());
+                batches[batches.Count - 1][pair.Key] = pair.Value;
             }
-            UnreadBodies.AddRange(Unread(meetings, ApplyBodies(items, meetings)));
-            if (UnreadBodies.Count > 0) BodiesProblem = "Exchange не отдал текст приглашения у " + UnreadBodies.Count + " из " + meetings.Count + " встреч";
+            return batches;
         }
 
         private static Meeting Parse(XmlElement item)
