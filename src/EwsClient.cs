@@ -140,7 +140,9 @@ namespace MeetingBell
             if (email.StartsWith("/") || email.IndexOf('@') < 0) email = "";
             string person = name.Length == 0 ? email : email.Length == 0 || name.Equals(email, StringComparison.OrdinalIgnoreCase) ? name : name + " <" + email + ">";
             if (person.Length == 0) return null;
-            return person.Length > MaxPersonLength ? person.Substring(0, MaxPersonLength - 1) + "…" : person;
+            if (person.Length <= MaxPersonLength) return person;
+            int cut = char.IsHighSurrogate(person[MaxPersonLength - 2]) ? MaxPersonLength - 2 : MaxPersonLength - 1;
+            return person.Substring(0, cut) + "…";
         }
 
         internal static string Describe(string body)

@@ -240,9 +240,10 @@ namespace MeetingBell
             Check(freshPeople.Organizer == "Старый" && freshPeople.RequiredAttendees == "A" && freshPeople.OptionalAttendees == "B", "known people kept when item did not arrive");
             cache.Meetings[0].Organizer = "Анна <anna@example.com>";
             cache.Meetings[0].RequiredAttendees = "Боб \"шеф\"";
+            cache.Meetings[0].OptionalAttendees = "Ли";
             cache.Save();
             TodayCache reloaded = TodayCache.Load(DateTime.Today, line => { });
-            Check(reloaded.Meetings[0].Organizer == "Анна <anna@example.com>" && reloaded.Meetings[0].RequiredAttendees == "Боб \"шеф\"" && reloaded.Meetings[0].OptionalAttendees == null && reloaded.Meetings[1].Organizer == null, "people survive restart");
+            Check(reloaded.Meetings[0].Organizer == "Анна <anna@example.com>" && reloaded.Meetings[0].RequiredAttendees == "Боб \"шеф\"" && reloaded.Meetings[0].OptionalAttendees == "Ли" && reloaded.Meetings[1].Organizer == null, "people survive restart");
             var morning = new Meeting { Start = new DateTime(2026, 11, 16, 11, 30, 0), End = new DateTime(2026, 11, 16, 12, 0, 0) };
             Check(DescriptionForm.When(morning) == "понедельник, 16 ноября, 11:30–12:00", "card time line");
             int hiddenPeople;
@@ -254,6 +255,31 @@ namespace MeetingBell
             List<string> split = DescriptionForm.SplitPeople("А; Б; и ещё 7", out overflow);
             Check(split.Count == 2 && overflow == 7 && DescriptionForm.SplitPeople("и ещё кто-то", out overflow).Count == 1 && overflow == 0, "server overflow tail parsed only as number");
             Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16), End = new DateTime(2026, 11, 17), IsAllDay = true }) == "понедельник, 16 ноября, весь день", "card all-day line");
+            string smile = char.ConvertFromUtf32(0x1F600);
+            var edge = At(DateTime.Today, 30, "q");
+            XmlDocument edgePeople = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("Q", null, "", "", "", "<t:Organizer><t:Mailbox><t:Name>" + new string('x', 200) + "</t:Name><t:EmailAddress>a@example.com</t:EmailAddress></t:Mailbox></t:Organizer>"
+                + "<t:RequiredAttendees><t:Attendee><t:Mailbox><t:Name>" + new string('x', 118) + smile + "tail</t:Name></t:Mailbox></t:Attendee></t:RequiredAttendees>"
+                + "<t:OptionalAttendees><t:Attendee><t:Mailbox><t:EmailAddress>/O=EX/OU=X</t:EmailAddress></t:Mailbox></t:Attendee>"
+                + "<t:Attendee><t:Mailbox><t:Name></t:Name><t:EmailAddress>nobody</t:EmailAddress></t:Mailbox></t:Attendee></t:OptionalAttendees>")
+                + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            EwsClient.ApplyBodies(edgePeople, new Dictionary<string, Meeting> { { "Q", edge } });
+            Check(edge.Organizer.Length == 120 && edge.Organizer.EndsWith("…"), "long person cut to 120");
+            Check(edge.RequiredAttendees == new string('x', 118) + "…", "person cut keeps surrogate pair whole");
+            Check(edge.OptionalAttendees == null, "only unusable mailboxes give no attendees");
+            var caseless = At(DateTime.Today, 30, "r");
+            EwsClient.ApplyBodies(Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("R", null, "", "", "", "<t:Organizer><t:Mailbox><t:Name>Bob@Example.com</t:Name><t:EmailAddress>bob@example.com</t:EmailAddress></t:Mailbox></t:Organizer>")
+                + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>"), new Dictionary<string, Meeting> { { "R", caseless } });
+            Check(caseless.Organizer == "Bob@Example.com", "name equal to address ignoring case shown once");
+            Check(DescriptionForm.Collapse(new string('x', 28) + smile + "yyyyy <a@b.c>", out hiddenPeople) == new string('x', 28) + "…" && hiddenPeople == 0, "collapse keeps surrogate pair whole");
+            Check(DescriptionForm.Collapse("Ян <y@ex.ru>; Ли <l@ex.ru>; и ещё 34", out hiddenPeople) == "Ян <y@ex.ru>; Ли <l@ex.ru>" && hiddenPeople == 34, "only server tail over the limit");
+            var freshOrganizer = At(DateTime.Today, 30, "s");
+            freshOrganizer.Organizer = "Новый";
+            var staleOrganizer = At(DateTime.Today, 30, "s");
+            staleOrganizer.Organizer = "Старый";
+            TrayApplication.KeepKnownLinks(new List<Meeting> { freshOrganizer }, new List<Meeting> { staleOrganizer });
+            Check(freshOrganizer.Organizer == "Новый", "fresh organizer is not overwritten");
         }
 
         private static void Mail()
@@ -380,6 +406,8 @@ namespace MeetingBell
             Check(MeetingLinks.WebLinks(null).Count == 0 && MeetingLinks.WebLinks("нет ссылок").Count == 0, "no links in empty text");
             List<TextLink> quoted = MeetingLinks.WebLinks("См. «https://wiki.example.com/a» и https://b.example/c… и https://evil.example/" + (char)0x202E + "moc.knab");
             Check(quoted.Count == 3 && quoted[0].Url == "https://wiki.example.com/a" && quoted[1].Url == "https://b.example/c" && quoted[2].Url == "https://evil.example/", "link stops at russian quotes, ellipsis and direction marks");
+            List<TextLink> marks = MeetingLinks.WebLinks("“https://a.example/x” „https://d.example/w” https://b.example/y" + (char)0x200B + "z https://c.example/" + (char)0x2067 + "q https://e.example/" + (char)0x200F + "r");
+            Check(marks.Count == 5 && marks[0].Url == "https://a.example/x" && marks[1].Url == "https://d.example/w" && marks[2].Url == "https://b.example/y" && marks[3].Url == "https://c.example/" && marks[4].Url == "https://e.example/", "link stops at typographic quotes, zero width and isolate marks");
             Check(MeetingLinks.DisplayHost("https://rooms.example.com/5") == "rooms.example.com", "ascii host shown as is");
             var again = new Dictionary<string, Meeting> { { "X", At(DateTime.Today, 30, "x") }, { "Y", At(DateTime.Today, 30, "y") } };
             Meeting oldX = At(DateTime.Today, 30, "x");
