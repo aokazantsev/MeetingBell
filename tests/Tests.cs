@@ -194,6 +194,8 @@ namespace MeetingBell
             Check(text == "Повестка" + Environment.NewLine + Environment.NewLine + "Переговорная 5", "description trimmed and blank lines collapsed");
             Check(EwsClient.Describe("   \r\n ") == null && EwsClient.Describe(null) == null, "empty body gives no description");
             Check(EwsClient.Describe(new string('x', 5000)).Length == 4001, "long body cut to the limit");
+            Check(EwsClient.Describe(new string('x', 4000)) == new string('x', 4000) && EwsClient.Describe(new string('x', 4001)) == new string('x', 4000) + "…", "cut only above the limit");
+            Check(EwsClient.Describe(new string('x', 3999) + "😀tail") == new string('x', 3999) + "…", "cut keeps surrogate pair whole");
             var withLink = new Meeting { Uid = "l", Link = "https://zoom.us/j/own", Start = DateTime.Today, End = DateTime.Today.AddHours(1) };
             var requested = new Dictionary<string, Meeting> { { "L", withLink } };
             XmlDocument body = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
@@ -219,12 +221,15 @@ namespace MeetingBell
             Check(TrayApplication.MailText(null) == "Почта ещё не загружена" && TrayApplication.MailText(0) == "Новых писем нет", "mail text without count");
             Check(TrayApplication.MailText(1) == "У вас 1 новое письмо" && TrayApplication.MailText(3) == "У вас 3 новых письма" && TrayApplication.MailText(5) == "У вас 5 новых писем", "mail plural 1/3/5");
             Check(TrayApplication.MailText(11) == "У вас 11 новых писем" && TrayApplication.MailText(21) == "У вас 21 новое письмо" && TrayApplication.MailText(112) == "У вас 112 новых писем", "mail plural 11/21/112");
+            Check(TrayApplication.MailText(2) == "У вас 2 новых письма" && TrayApplication.MailText(4) == "У вас 4 новых письма" && TrayApplication.MailText(22) == "У вас 22 новых письма", "mail plural 2/4/22");
+            Check(TrayApplication.MailText(14) == "У вас 14 новых писем" && TrayApplication.MailText(111) == "У вас 111 новых писем", "mail plural 14/111");
             Check(TrayApplication.MailLine(4, null) == "У вас 4 новых письма" && TrayApplication.MailLine(4, "сбой") == "У вас 4 новых письма · не обновлено" && TrayApplication.MailLine(null, "нет прав") == "Почта не загружена: нет прав", "mail line shows stale and failed state");
             var full = new AppSettings { EwsUrl = "https://a.example/EWS/Exchange.asmx", VpnAdapters = new List<string> { "Wg" }, LeadMinutes = 7, CalendarMinutes = 2, MailMinutes = 3, MailUrl = "https://m.example/owa" };
             AppSettings copy = full.Clone();
             Check(copy.EwsUrl == full.EwsUrl && copy.VpnAdapters[0] == "Wg" && !ReferenceEquals(copy.VpnAdapters, full.VpnAdapters) && copy.LeadMinutes == 7 && copy.CalendarMinutes == 2 && copy.MailMinutes == 3 && copy.MailUrl == "https://m.example/owa", "clone keeps every setting");
             Check(new AppSettings { EwsUrl = "not a url" }.WebMailUrl == null && new AppSettings { EwsUrl = "not a url", MailUrl = "https://m.example/" }.WebMailUrl == "https://m.example/", "web mail with broken EWS address");
             Check(new AppSettings { EwsUrl = "https://Mail.Example.com:8443/EWS/Exchange.asmx" }.WebMailUrl == "https://mail.example.com:8443/owa/#path=/mail", "web mail keeps port");
+            Check(new AppSettings { EwsUrl = "https://mail.example.com/EWS/Exchange.asmx", MailUrl = "javascript:x" }.WebMailUrl == "https://mail.example.com/owa/#path=/mail" && new AppSettings { EwsUrl = "https://mail.example.com/EWS/Exchange.asmx", MailUrl = "https://u:p@m.example/" }.WebMailUrl == "https://mail.example.com/owa/#path=/mail", "unsafe web mail falls back to derived");
             bool denied = false;
             try
             {
@@ -406,6 +411,7 @@ namespace MeetingBell
             Check(loaded.EwsUrl == "https://mail.example.org/EWS/Exchange.asmx", "ews url read");
             Check(loaded.VpnAdapters.Count == 2 && loaded.VpnAdapters[1] == "WireGuard", "adapters parsed without duplicates");
             Check(loaded.LeadMinutes == AppSettings.MaxLeadMinutes, "lead clamped");
+            Check(loaded.CalendarMinutes == 5 && loaded.MailMinutes == 5 && loaded.MailUrl == "", "old settings file gets polling defaults");
             loaded.VpnAdapters.Clear();
             loaded.LeadMinutes = 0;
             Check(loaded.Save() == null, "settings saved");
@@ -414,6 +420,7 @@ namespace MeetingBell
             File.Delete(AppSettings.FilePath);
             AppSettings defaults = AppSettings.Load();
             Check(defaults.LeadMinutes == 1 && defaults.VpnAdapters.Count == 1 && defaults.EwsUrl.Contains("example.com"), "neutral defaults");
+            Check(defaults.CalendarMinutes == 5 && defaults.MailMinutes == 5 && defaults.MailUrl == "", "polling defaults without file");
         }
 
         private static void Words()
