@@ -156,8 +156,7 @@ namespace MeetingBell
             }
             if (count == 0 && people.Count > 0)
             {
-                int cut = char.IsHighSurrogate(people[0][CollapsedLength - 2]) ? CollapsedLength - 2 : CollapsedLength - 1;
-                shown = people[0].Substring(0, cut).TrimEnd() + "…";
+                shown = Shorten(people[0]);
                 count = 1;
             }
             hidden = people.Count - count + more;
@@ -258,19 +257,19 @@ namespace MeetingBell
 
         private void CopyLink(TextLink link, Point at)
         {
-            string shown;
+            bool copied;
             try
             {
-                Clipboard.SetText(link.Url);
-                shown = "Ссылка скопирована";
+                Clipboard.SetDataObject(new DataObject(DataFormats.UnicodeText, link.Url), true, 3, 50);
+                copied = true;
                 Usage.Hit("description.copy");
             }
             catch (System.Runtime.InteropServices.ExternalException)
             {
-                shown = "Не удалось скопировать: буфер обмена занят";
+                copied = false;
             }
-            AppLog.Append(shown == "Ссылка скопирована" ? "description link copied" : "description link not copied");
-            notice.Show(shown, text, at.X + Font.Height / 2, at.Y + Font.Height, NoticeMs);
+            AppLog.Append(copied ? "description link copied" : "description link not copied");
+            notice.Show(copied ? "Ссылка скопирована" : "Не удалось скопировать: буфер обмена занят", text, at.X + Font.Height / 2, at.Y + Font.Height, NoticeMs);
         }
 
         private void OnTextMouseUp(object sender, MouseEventArgs e)
