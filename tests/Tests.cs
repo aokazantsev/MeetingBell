@@ -338,6 +338,30 @@ namespace MeetingBell
             Check(!viewedFresh.NeedsLoadWhenViewed(true), "viewed fresh day is not reloaded on a visit");
             viewedFresh.Stale = true;
             Check(viewedFresh.NeedsLoadWhenViewed(false), "viewed day reloads after refresh");
+            var failedStale = new OtherDay { Failed = true, Stale = true, Meetings = new List<Meeting>(), Fetched = fetchedAt };
+            Check(failedStale.NeedsLoad(fetchedAt, 5, false) && !failedStale.Ready, "refresh retries a failed neighbour");
+            failedStale.Loading = true;
+            Check(!failedStale.NeedsLoad(fetchedAt, 5, false), "failed stale day being loaded is not queued twice");
+            Check(!new OtherDay { Loading = true, Stale = true, Meetings = new List<Meeting>() }.NeedsLoadWhenViewed(true), "viewed day being loaded not requested again");
+            Check(!new OtherDay { Wanted = true, Failed = true, Meetings = new List<Meeting>() }.NeedsLoadWhenViewed(true), "viewed queued day not queued twice");
+            Check(new OtherDay().NeedsLoadWhenViewed(false), "viewed day without data loads");
+            var firstFailed = new OtherDay { Failed = true };
+            Check(!firstFailed.NeedsLoad(fetchedAt.AddHours(1), 5, false) && firstFailed.NeedsLoad(fetchedAt, 5, true), "first failed load not retried by polling, retried on visit");
+            for (int weekday = 0; weekday < 7; weekday++)
+            {
+                DateTime inWeek = new DateTime(2026, 11, 16).AddDays(weekday);
+                Check(DayNavigation.First(inWeek) == new DateTime(2026, 11, 9) && DayNavigation.Last(inWeek) == new DateTime(2026, 11, 29), "range for weekday " + inWeek.DayOfWeek);
+            }
+            var prevSunday = new DateTime(2026, 11, 15);
+            Check(DayNavigation.First(prevSunday) == new DateTime(2026, 11, 2) && DayNavigation.Last(prevSunday) == new DateTime(2026, 11, 22), "sunday belongs to the ending week");
+            var nov30 = new DateTime(2026, 11, 30);
+            Check(DayNavigation.First(nov30) == new DateTime(2026, 11, 23) && DayNavigation.Last(nov30) == new DateTime(2026, 12, 13) && DayNavigation.InRange(new DateTime(2026, 12, 13, 23, 59, 0), nov30) && !DayNavigation.InRange(new DateTime(2026, 12, 14), nov30), "range across month");
+            Check(DayNavigation.Title(new DateTime(2026, 12, 2), nov30) == "2 декабря, среда" && DayNavigation.Title(new DateTime(2026, 11, 28), nov30) == "28 ноября, суббота", "titles across month");
+            var jan1 = new DateTime(2027, 1, 1);
+            Check(DayNavigation.First(jan1) == new DateTime(2026, 12, 21) && DayNavigation.Last(jan1) == new DateTime(2027, 1, 10), "range across year");
+            Check(DayNavigation.Title(new DateTime(2026, 12, 31), jan1) == "Вчера, 31 декабря, четверг" && DayNavigation.Title(new DateTime(2027, 1, 2), jan1) == "Завтра, 2 января, суббота", "yesterday and tomorrow across year");
+            var lateSunday = new DateTime(2026, 11, 22, 23, 59, 0);
+            Check(DayNavigation.First(lateSunday) == new DateTime(2026, 11, 9) && DayNavigation.Last(lateSunday) == new DateTime(2026, 11, 29) && !DayNavigation.InRange(new DateTime(2026, 11, 8, 23, 59, 59), new DateTime(2026, 11, 16, 12, 0, 0)) && DayNavigation.Title(new DateTime(2026, 11, 17, 0, 30, 0), new DateTime(2026, 11, 16, 23, 30, 0)) == "Завтра, 17 ноября, вторник", "time of day ignored");
             var queued = new OtherDay { Wanted = true };
             Check(!queued.Ready && !queued.NeedsLoad(fetchedAt, 5, true), "queued day is not ready and not queued twice");
             int overflow;

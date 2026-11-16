@@ -633,7 +633,7 @@ namespace MeetingBell
             OtherDay other;
             otherDays.TryGetValue(viewDay, out other);
             List<Meeting> shown = today ? cache.Meetings : other != null && other.Meetings != null ? other.Meetings : new List<Meeting>();
-            ListStatus status = today || authenticationFailed || !HasCredential ? CurrentStatus() : new ListStatus(other != null && other.Fetched.HasValue ? "Получено в " + other.Fetched.Value.ToString("HH:mm") : "Список не загружен", null, false);
+            ListStatus status = today || authenticationFailed || !HasCredential ? CurrentStatus() : OtherDayStatus(other);
             listForm.Populate(shown, now, DayNavigation.Title(viewDay, cache.Day), CanStep(-1), CanStep(1), today ? "Созвонов на сегодня нет" : "Созвонов нет", status, Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null, listAnchor);
             if (listForm.Visible) listForm.ShowNear(listAnchor);
         }
@@ -648,6 +648,14 @@ namespace MeetingBell
             if (lastError != null) return new ListStatus(Capitalize(lastError), "Повторить", true);
             if (fetching && !cache.Fetched.HasValue) return new ListStatus("Загружаю…", null, false);
             return new ListStatus(cache.Fetched.HasValue ? "Обновлено в " + cache.Fetched.Value.ToString("HH:mm") : "Список не загружен", "Обновить", false);
+        }
+
+        private ListStatus OtherDayStatus(OtherDay other)
+        {
+            string received = other != null && other.Fetched.HasValue ? "получено в " + other.Fetched.Value.ToString("HH:mm") : "список не загружен";
+            if (vpnUp != true) return new ListStatus("VPN выключен, " + received, null, false);
+            if (other != null && other.Failed) return new ListStatus(Capitalize(received) + " · не обновлено", null, true);
+            return new ListStatus(Capitalize(received), null, false);
         }
 
         private string Describe(Meeting meeting)
@@ -884,7 +892,7 @@ namespace MeetingBell
             details.Enabled = meeting.HasDetails;
             meetingMenu.Items.Add(details);
             var remind = new ToolStripMenuItem("Напоминание");
-            bool canRemind = !meeting.IsAllDay && meeting.Start.Date >= cache.Day;
+            bool canRemind = !meeting.IsAllDay && viewDay >= cache.Day;
             remind.Enabled = canRemind;
             if (canRemind)
             {
