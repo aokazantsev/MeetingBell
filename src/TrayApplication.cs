@@ -1,0 +1,870 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Media;
+using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+namespace MeetingBell
+{
+    internal sealed class TrayApplication : ApplicationContext
+    {
+        private const string AppTitle = AppIdentity.Name;
+        private const int MaxTrayTextLength = 63;
+        private const int TickMs = 15 * 1000;
+        private const int HoverCheckMs = 100;
+        private const int HoverRadius = 20;
+        private const int HideAfterMs = 400;
+        private const int ReminderGap = 8;
+        private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan SnoozeFor = TimeSpan.FromMinutes(1);
+        private static readonly int[] LeadChoices = { 0, 1, 5, 10, 15, 30 };
+        private static readonly string ReminderSound = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Media\Windows Notify Calendar.wav");
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+
+        private readonly NotifyIcon trayIcon = new NotifyIcon();
+        private readonly Control invoker = new Control();
+        private readonly System.Windows.Forms.Timer tickTimer = new System.Windows.Forms.Timer();
+        private readonly System.Windows.Forms.Timer hoverTimer = new System.Windows.Forms.Timer();
+        private readonly MeetingListForm listForm = new MeetingListForm();
+        private readonly ContextMenuStrip meetingMenu = new ContextMenuStrip();
+        private readonly ReminderPlanner planner = new ReminderPlanner();
+        private readonly List<ReminderForm> reminders = new List<ReminderForm>();
+        private AppSettings settings;
+        private ExchangeCredential credential;
+        private string credentialProblem;
+        private MeetingPreferences preferences;
+        private TodayCache cache;
+        private SettingsForm settingsForm;
+        private TrayState shownState = (TrayState)(-1);
+        private Icon currentIcon;
+        private bool? vpnUp;
+        private bool fetching;
+        private bool refreshPending;
+        private int listOpens;
+        private int networkTickQueued;
+        private bool exiting;
+        private int fetchGeneration;
+        private string lastError;
+        private bool authenticationFailed;
+        private int loggedMeetingCount = -1;
+        private DateTime nextRefresh = DateTime.MinValue;
+        private Point hoverAnchor;
+        private DateTime outsideSince = DateTime.MaxValue;
+        private bool updateBalloonShown;
+
+        public TrayApplication(AppSettings loaded)
+        {
+            settings = loaded;
+            bool firstRun = !AppSettings.FileExists;
+            if (firstRun)
+            {
+                string saveProblem = settings.Save();
+                if (saveProblem != null) AppLog.Append("settings not saved: " + saveProblem);
+            }
+            credentialProblem = CredentialStore.TryRead(out credential);
+            if (credentialProblem != null) AppLog.Append("credential not read: " + credentialProblem);
+            DateTime now = DateTime.Now;
+            preferences = MeetingPreferences.Load(now);
+            if (preferences.LoadProblem != null) AppLog.Append("meeting preferences: " + preferences.LoadProblem);
+            cache = TodayCache.Load(now, AppLog.Append);
+            AppLog.Append("settings: first run=" + firstRun + ", ews host=" + EwsHost(settings.EwsUrl)
+                + ", vpn adapters=" + (settings.ChecksVpn ? AppSettings.JoinList(settings.VpnAdapters) : "not checked")
+                + ", lead=" + settings.LeadMinutes + ", credential=" + (HasCredential ? "saved" : "none")
+                + ", meeting preferences=" + preferences.Count + ", cached meetings=" + cache.Meetings.Count);
+
+            invoker.CreateControl();
+            trayIcon.ContextMenuStrip = new ContextMenuStrip();
+            trayIcon.ContextMenuStrip.Opening += OnMenuOpening;
+            trayIcon.MouseMove += OnTrayMouseMove;
+            trayIcon.MouseClick += OnTrayMouseClick;
+            trayIcon.MouseDoubleClick += OnTrayDoubleClick;
+            trayIcon.BalloonTipClicked += OnBalloonClicked;
+            listForm.MeetingClicked += OnMeetingClicked;
+            listForm.StatusClicked += OnStatusClicked;
+            hoverTimer.Interval = HoverCheckMs;
+            hoverTimer.Tick += OnHoverTick;
+            tickTimer.Interval = TickMs;
+            tickTimer.Tick += (sender, e) => Tick();
+            UpdateTray();
+            trayIcon.Visible = true;
+
+            NetworkChange.NetworkAddressChanged += OnNetworkChanged;
+            NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            SystemEvents.TimeChanged += OnTimeChanged;
+            tickTimer.Start();
+            Tick();
+            UpdateUsageState();
+            Usage.Start();
+            UpdateWatcher.Start(version => Post(() => ShowUpdateBalloon(version)));
+            if (!HasCredential) Post(() => ShowSettings("Чтобы " + AppIdentity.Name + " видел созвоны, введи адрес EWS, логин и пароль Exchange."));
+        }
+
+        private bool HasCredential
+        {
+            get { return credential != null && credential.IsComplete; }
+        }
+
+        private void Post(Action action)
+        {
+            try
+            {
+                invoker.BeginInvoke(action);
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+
+        protected override void ExitThreadCore()
+        {
+            exiting = true;
+            FlushListOpens();
+            NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
+            NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.TimeChanged -= OnTimeChanged;
+            tickTimer.Dispose();
+            hoverTimer.Dispose();
+            if (settingsForm != null) settingsForm.Close();
+            foreach (ReminderForm reminder in reminders.ToArray()) reminder.Close();
+            listForm.Dispose();
+            meetingMenu.Dispose();
+            trayIcon.Visible = false;
+            trayIcon.Dispose();
+            if (currentIcon != null) currentIcon.Dispose();
+            invoker.Dispose();
+            base.ExitThreadCore();
+        }
+
+        private void OnNetworkChanged(object sender, EventArgs e)
+        {
+            PostNetworkTick();
+        }
+
+        private void OnNetworkAvailabilityChanged(object sender, NetworkAvailabilityEventArgs e)
+        {
+            PostNetworkTick();
+        }
+
+        private void PostNetworkTick()
+        {
+            if (Interlocked.Exchange(ref networkTickQueued, 1) == 1) return;
+            Post(() =>
+            {
+                Interlocked.Exchange(ref networkTickQueued, 0);
+                Tick();
+            });
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume) return;
+            Post(() =>
+            {
+                AppLog.Append("resume");
+                RequestRefresh();
+                Tick();
+            });
+        }
+
+        private void OnTimeChanged(object sender, EventArgs e)
+        {
+            Post(() =>
+            {
+                TimeZoneInfo.ClearCachedData();
+                RequestRefresh();
+                Tick();
+            });
+        }
+
+        private void Tick()
+        {
+            DateTime now = DateTime.Now;
+            if (cache.Day != now.Date)
+            {
+                AppLog.Append("new day " + now.ToString("yyyy-MM-dd"));
+                cache = new TodayCache { Day = now.Date };
+                SaveCache();
+                RequestRefresh();
+                loggedMeetingCount = -1;
+            }
+            bool vpn = VpnDetector.IsUp(settings.VpnAdapters);
+            if (vpnUp != vpn)
+            {
+                AppLog.Append(settings.ChecksVpn ? "vpn " + (vpn ? "up" : "down") : "vpn not checked");
+                if (vpn) RequestRefresh();
+                vpnUp = vpn;
+            }
+            if (vpn && HasCredential && !authenticationFailed && !fetching && now >= nextRefresh) StartFetch(now);
+            ShowDueReminders(now);
+            UpdateTray();
+            if (listForm.Visible) PopulateList();
+            FlushListOpens();
+        }
+
+        private void FlushListOpens()
+        {
+            if (listOpens == 0) return;
+            Usage.Add("list.open", listOpens);
+            listOpens = 0;
+        }
+
+        private void StartFetch(DateTime now)
+        {
+            fetching = true;
+            int generation = ++fetchGeneration;
+            string url = settings.EwsUrl;
+            ExchangeCredential used = credential;
+            DateTime day = now.Date;
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                List<Meeting> meetings = null;
+                string error = null;
+                bool authentication = false;
+                List<Meeting> unreadBodies = new List<Meeting>();
+                try
+                {
+                    var client = new EwsClient(url, used);
+                    meetings = client.Day(day);
+                    unreadBodies = client.UnreadBodies;
+                    if (client.LinksProblem != null) AppLog.Append("calendar links not loaded: " + client.LinksProblem);
+                }
+                catch (CalendarException failure)
+                {
+                    error = failure.Message;
+                    authentication = failure.IsAuthentication;
+                }
+                catch (Exception failure)
+                {
+                    AppLog.Append("calendar fetch failed: " + failure);
+                    error = "внутренняя ошибка: " + failure.Message;
+                }
+                Post(() => OnFetched(generation, day, meetings, error, authentication, unreadBodies));
+            });
+        }
+
+        private void OnFetched(int generation, DateTime day, List<Meeting> meetings, string error, bool authentication, List<Meeting> unreadBodies)
+        {
+            if (generation != fetchGeneration) return;
+            fetching = false;
+            DateTime now = DateTime.Now;
+            bool again = refreshPending || day != cache.Day;
+            refreshPending = false;
+            nextRefresh = again ? DateTime.MinValue : now + RefreshInterval;
+            if (again) Post(Tick);
+            if (day != cache.Day) return;
+            if (error != null)
+            {
+                if (error != lastError)
+                {
+                    AppLog.Append("calendar error: " + error);
+                    Usage.Hit("calendar.error");
+                }
+                lastError = error;
+                if (authentication)
+                {
+                    authenticationFailed = true;
+                    AppLog.Append("calendar polling paused until credentials change");
+                }
+                UpdateTray();
+                if (listForm.Visible) PopulateList();
+                return;
+            }
+            if (lastError != null) AppLog.Append("calendar ok again");
+            lastError = null;
+            MergeLinks(meetings, unreadBodies, cache.Meetings);
+            cache.Meetings = meetings;
+            cache.Fetched = now;
+            SaveCache();
+            if (meetings.Count != loggedMeetingCount)
+            {
+                AppLog.Append("calendar: " + meetings.Count + " meetings today");
+                loggedMeetingCount = meetings.Count;
+            }
+            string seenProblem = preferences.MarkSeen(meetings, now);
+            if (seenProblem != null) AppLog.Append("meeting preferences not saved: " + seenProblem);
+            ShowDueReminders(now);
+            UpdateTray();
+            UpdateUsageState();
+            if (listForm.Visible) PopulateList();
+        }
+
+        internal static void KeepKnownLinks(List<Meeting> fresh, List<Meeting> previous)
+        {
+            foreach (Meeting meeting in fresh)
+            {
+                if (meeting.Link != null) continue;
+                Meeting known = previous.Find(old => old.ReminderKey == meeting.ReminderKey && old.Link != null);
+                if (known != null) meeting.Link = known.Link;
+            }
+        }
+
+        internal static void MergeLinks(List<Meeting> meetings, List<Meeting> unread, List<Meeting> previous)
+        {
+            KeepKnownLinks(unread, previous);
+            UseLocationLinks(meetings);
+        }
+
+        internal static void UseLocationLinks(List<Meeting> meetings)
+        {
+            foreach (Meeting meeting in meetings)
+            {
+                if (meeting.Link == null) meeting.Link = MeetingLinks.AnyWebLink(meeting.Location);
+            }
+        }
+
+        private void RequestRefresh()
+        {
+            nextRefresh = DateTime.MinValue;
+            if (fetching) refreshPending = true;
+        }
+
+        private void RefreshNow(bool abandonRunning)
+        {
+            authenticationFailed = false;
+            lastError = null;
+            if (fetching && abandonRunning)
+            {
+                fetching = false;
+                refreshPending = false;
+                fetchGeneration++;
+            }
+            RequestRefresh();
+            Tick();
+        }
+
+        private void SaveCache()
+        {
+            string problem = cache.Save();
+            if (problem != null) AppLog.Append("today list not saved: " + problem);
+        }
+
+        private void ShowDueReminders(DateTime now)
+        {
+            List<Meeting> due = planner.Due(cache.Meetings, now, settings.LeadMinutes, preferences, cache.Shown);
+            if (due.Count == 0) return;
+            foreach (Meeting meeting in due)
+            {
+                cache.Shown.Add(meeting.ReminderKey);
+                if (reminders.Exists(open => open.Meeting.ReminderKey == meeting.ReminderKey)) continue;
+                ShowReminder(meeting);
+                AppLog.Append("reminder: meeting at " + meeting.Start.ToString("HH:mm") + ", lead " + preferences.EffectiveLead(meeting, settings.LeadMinutes) + " min, link " + (meeting.Link != null ? "yes" : "no"));
+                Usage.Hit("reminder.show");
+            }
+            SaveCache();
+        }
+
+        private void ShowReminder(Meeting meeting)
+        {
+            var form = new ReminderForm(meeting);
+            bool handled = false;
+            form.JoinClicked += reminder =>
+            {
+                handled = true;
+                Usage.Hit("reminder.join");
+                OpenLink(reminder.Meeting);
+            };
+            form.SnoozeClicked += reminder =>
+            {
+                handled = true;
+                Usage.Hit("reminder.snooze");
+                planner.Snooze(reminder.Meeting, DateTime.Now + SnoozeFor, cache.Shown);
+                SaveCache();
+            };
+            form.FormClosed += (sender, e) =>
+            {
+                if (!handled && !exiting) Usage.Hit("reminder.close");
+                reminders.Remove(form);
+                form.Dispose();
+                Restack();
+            };
+            reminders.Add(form);
+            form.Show();
+            Restack();
+            PlaySound();
+        }
+
+        private void Restack()
+        {
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            int bottom = area.Bottom - ReminderGap;
+            foreach (ReminderForm reminder in reminders)
+            {
+                int top = Math.Max(area.Top, bottom - reminder.Height);
+                reminder.Location = new Point(area.Right - reminder.Width - ReminderGap, top);
+                bottom = top - ReminderGap;
+            }
+        }
+
+        private static void PlaySound()
+        {
+            try
+            {
+                if (File.Exists(ReminderSound))
+                {
+                    using (var player = new SoundPlayer(ReminderSound))
+                    {
+                        player.Play();
+                    }
+                    return;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+            SystemSounds.Asterisk.Play();
+        }
+
+        private void OpenLink(Meeting meeting)
+        {
+            string problem = MeetingLinks.Open(meeting.Link);
+            AppLog.Append(problem == null ? "link opened" : "link not opened: " + problem);
+            if (problem != null) MessageBox.Show("Не удалось открыть ссылку: " + problem, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private TrayState CurrentState()
+        {
+            if (!HasCredential || authenticationFailed) return TrayState.Problem;
+            if (vpnUp != true) return TrayState.Offline;
+            return lastError != null ? TrayState.Problem : TrayState.Ready;
+        }
+
+        private void UpdateTray()
+        {
+            TrayState state = CurrentState();
+            if (state != shownState)
+            {
+                Icon previous = currentIcon;
+                currentIcon = BellPainter.TrayIcon(state);
+                trayIcon.Icon = currentIcon;
+                if (previous != null) previous.Dispose();
+                shownState = state;
+            }
+            string text = AppIdentity.Name + " — " + Headline(DateTime.Now);
+            trayIcon.Text = text.Length > MaxTrayTextLength ? text.Substring(0, MaxTrayTextLength - 1) + "…" : text;
+        }
+
+        private string Headline(DateTime now)
+        {
+            if (!HasCredential) return "нет логина Exchange";
+            if (authenticationFailed) return "Exchange отказал во входе";
+            Meeting next = cache.Meetings.Find(meeting => !meeting.IsAllDay && meeting.End > now);
+            if (next == null) return cache.Fetched.HasValue ? "созвонов больше нет" : "список не загружен";
+            return (next.IsGoing(now) ? "идёт " : "") + next.Start.ToString("HH:mm") + " " + next.DisplaySubject;
+        }
+
+        private void PopulateList()
+        {
+            DateTime now = DateTime.Now;
+            bool problem;
+            bool clickable;
+            string status = StatusLine(out problem, out clickable);
+            listForm.Populate(cache.Meetings, now, status, problem, clickable, Describe);
+            if (listForm.Visible) listForm.ShowNear(hoverAnchor);
+        }
+
+        private string StatusLine(out bool problem, out bool clickable)
+        {
+            problem = true;
+            clickable = true;
+            string asOf = cache.Fetched.HasValue ? "список на " + cache.Fetched.Value.ToString("HH:mm") : "список не загружен";
+            if (credentialProblem != null && credential == null) return "Не прочитан логин Exchange: " + credentialProblem + " — открыть настройки";
+            if (!HasCredential) return "Не задан логин Exchange — открыть настройки";
+            if (authenticationFailed) return Capitalize(lastError) + " — открыть настройки";
+            if (vpnUp != true)
+            {
+                problem = false;
+                clickable = false;
+                return "VPN выключен — " + asOf;
+            }
+            if (lastError != null) return Capitalize(lastError) + " — повторить";
+            problem = false;
+            if (fetching && !cache.Fetched.HasValue)
+            {
+                clickable = false;
+                return "Загружаю…";
+            }
+            return cache.Fetched.HasValue ? "Обновлено в " + cache.Fetched.Value.ToString("HH:mm") + " — обновить" : "Список не загружен — обновить";
+        }
+
+        private string Describe(Meeting meeting)
+        {
+            var parts = new List<string>();
+            if (meeting.IsAllDay) parts.Add("без напоминания");
+            else
+            {
+                int custom;
+                bool hasCustom = preferences.TryGetLead(meeting.Uid, out custom);
+                int lead = hasCustom ? custom : settings.LeadMinutes;
+                parts.Add(LeadText(lead) + (hasCustom && lead != MeetingPreferences.Off ? " (своё)" : ""));
+            }
+            if (meeting.Link != null) parts.Add(MeetingLinks.IsConference(meeting.Link) ? "есть ссылка" : "ссылка: " + MeetingLinks.DisplayHost(meeting.Link));
+            else if (!string.IsNullOrWhiteSpace(meeting.Location)) parts.Add(meeting.Location.Trim());
+            return string.Join(" · ", parts.ToArray());
+        }
+
+        private static string LeadText(int lead)
+        {
+            if (lead == MeetingPreferences.Off) return "без напоминания";
+            if (lead == 0) return "напомнить в начале";
+            return "за " + lead + " мин";
+        }
+
+        private void OnTrayMouseMove(object sender, MouseEventArgs e)
+        {
+            hoverAnchor = Cursor.Position;
+            outsideSince = DateTime.MaxValue;
+            if (listForm.Visible) return;
+            ShowList();
+        }
+
+        private void OnTrayMouseClick(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            hoverAnchor = Cursor.Position;
+            outsideSince = DateTime.MaxValue;
+            if (!listForm.Visible) ShowList();
+        }
+
+        private void ShowList()
+        {
+            listOpens++;
+            PopulateList();
+            listForm.ShowNear(hoverAnchor);
+            hoverTimer.Start();
+        }
+
+        private void HideList()
+        {
+            hoverTimer.Stop();
+            listForm.Hide();
+        }
+
+        private void OnHoverTick(object sender, EventArgs e)
+        {
+            if (meetingMenu.Visible) return;
+            Point cursor = Cursor.Position;
+            bool nearIcon = Math.Abs(cursor.X - hoverAnchor.X) <= HoverRadius && Math.Abs(cursor.Y - hoverAnchor.Y) <= HoverRadius;
+            if (nearIcon || listForm.Contains(cursor, 4))
+            {
+                outsideSince = DateTime.MaxValue;
+                return;
+            }
+            DateTime now = DateTime.Now;
+            if (outsideSince == DateTime.MaxValue) outsideSince = now;
+            if ((now - outsideSince).TotalMilliseconds >= HideAfterMs) HideList();
+        }
+
+        private void OnStatusClicked()
+        {
+            Usage.Hit("list.status");
+            if (!HasCredential || authenticationFailed)
+            {
+                HideList();
+                ShowSettings(null);
+                return;
+            }
+            RefreshNow(false);
+        }
+
+        private void OnMeetingClicked(Meeting meeting, Point at)
+        {
+            meetingMenu.Items.Clear();
+            var title = new ToolStripMenuItem(meeting.DisplaySubject.Length > 60 ? meeting.DisplaySubject.Substring(0, 59) + "…" : meeting.DisplaySubject) { Enabled = false };
+            meetingMenu.Items.Add(title);
+            if (meeting.Link != null)
+            {
+                meetingMenu.Items.Add(new ToolStripMenuItem(MeetingLinks.JoinText(meeting.Link), null, (s, a) =>
+                {
+                    Usage.Hit("meeting.join");
+                    HideList();
+                    OpenLink(meeting);
+                }));
+            }
+            if (!meeting.IsAllDay)
+            {
+                meetingMenu.Items.Add(new ToolStripSeparator());
+                int custom;
+                bool hasCustom = preferences.TryGetLead(meeting.Uid, out custom);
+                var defaultItem = new ToolStripMenuItem("По умолчанию (" + LeadText(settings.LeadMinutes) + ")", null, (s, a) => SetLead(meeting, null)) { Checked = !hasCustom };
+                meetingMenu.Items.Add(defaultItem);
+                foreach (int lead in LeadChoices)
+                {
+                    int chosen = lead;
+                    meetingMenu.Items.Add(new ToolStripMenuItem(lead == 0 ? "В момент начала" : "За " + lead + " мин", null, (s, a) => SetLead(meeting, chosen)) { Checked = hasCustom && custom == lead });
+                }
+                meetingMenu.Items.Add(new ToolStripMenuItem("Не напоминать", null, (s, a) => SetLead(meeting, MeetingPreferences.Off)) { Checked = hasCustom && custom == MeetingPreferences.Off });
+                meetingMenu.Items.Add(new ToolStripSeparator());
+                meetingMenu.Items.Add(Disabled("Действует на все встречи этой серии"));
+            }
+            SetForegroundWindow(listForm.Handle);
+            meetingMenu.Show(at);
+        }
+
+        private static ToolStripMenuItem Disabled(string text)
+        {
+            return new ToolStripMenuItem(text) { Enabled = false };
+        }
+
+        private void SetLead(Meeting meeting, int? lead)
+        {
+            string problem;
+            if (lead == null)
+            {
+                Usage.Hit("meeting.default");
+                problem = preferences.Reset(meeting.Uid);
+            }
+            else
+            {
+                Usage.Hit(lead.Value == MeetingPreferences.Off ? "meeting.off" : "meeting.lead");
+                problem = preferences.Set(meeting.Uid, lead.Value, DateTime.Now);
+                if (lead.Value == MeetingPreferences.Off) planner.Forget(meeting);
+            }
+            AppLog.Append("meeting at " + meeting.Start.ToString("HH:mm") + ": lead " + (lead == null ? "default" : lead.Value.ToString()) + (problem == null ? "" : ", not saved: " + problem));
+            if (problem != null) MessageBox.Show("Не удалось сохранить настройку встречи: " + problem, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            UpdateUsageState();
+            ShowDueReminders(DateTime.Now);
+            if (listForm.Visible) PopulateList();
+        }
+
+        private void OnMenuOpening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            HideList();
+            ContextMenuStrip menu = trayIcon.ContextMenuStrip;
+            menu.Items.Clear();
+            bool problem;
+            bool clickable;
+            DateTime now = DateTime.Now;
+            menu.Items.Add(Disabled(HeadlineForMenu(now)));
+            string status = StatusLine(out problem, out clickable);
+            if (problem || vpnUp != true) menu.Items.Add(Disabled(TrimStatus(status)));
+            var refresh = new ToolStripMenuItem("Обновить сейчас", null, (s, a) =>
+            {
+                Usage.Hit("menu.refresh");
+                RefreshNow(false);
+            });
+            refresh.Enabled = HasCredential && vpnUp == true;
+            menu.Items.Add(refresh);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Настройки…", null, (s, a) =>
+            {
+                Usage.Hit("menu.settings");
+                ShowSettings(null);
+            }));
+            menu.Items.Add(new ToolStripMenuItem("Журнал", null, OnLogClick));
+            var startupItem = new ToolStripMenuItem("Запускать при входе в Windows", null, OnStartupClick);
+            startupItem.Checked = Autostart.IsEnabled();
+            menu.Items.Add(startupItem);
+            menu.Items.Add(new ToolStripMenuItem("Проверить обновление…", null, (s, a) =>
+            {
+                Usage.Hit("menu.update_check");
+                UpdateForm.ShowSingle();
+            }));
+            menu.Items.Add(new ToolStripMenuItem("О приложении…", null, (s, a) =>
+            {
+                Usage.Hit("menu.about");
+                AboutForm.ShowSingle();
+            }));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Выход", null, (s, a) =>
+            {
+                Usage.Hit("menu.exit");
+                ExitThread();
+            }));
+            e.Cancel = false;
+        }
+
+        private string HeadlineForMenu(DateTime now)
+        {
+            Meeting next = cache.Meetings.Find(meeting => !meeting.IsAllDay && meeting.End > now);
+            if (next == null) return cache.Fetched.HasValue || cache.Meetings.Count > 0 ? "Созвонов на сегодня больше нет" : "Список созвонов не загружен";
+            string subject = next.DisplaySubject.Length > 50 ? next.DisplaySubject.Substring(0, 49) + "…" : next.DisplaySubject;
+            return (next.IsGoing(now) ? "Идёт: " : "Следующий: ") + next.Start.ToString("HH:mm") + " " + subject;
+        }
+
+        private static string TrimStatus(string status)
+        {
+            foreach (string tail in new[] { " — открыть настройки", " — повторить", " — обновить" })
+            {
+                if (status.EndsWith(tail)) return status.Substring(0, status.Length - tail.Length);
+            }
+            return status;
+        }
+
+        private void OnTrayDoubleClick(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            Usage.Hit("tray.double_click");
+            HideList();
+            ShowSettings(null);
+        }
+
+        private void ShowSettings(string intro)
+        {
+            if (settingsForm != null)
+            {
+                settingsForm.Activate();
+                return;
+            }
+            settingsForm = new SettingsForm(settings.Clone(), credential, intro);
+            settingsForm.FormClosed += OnSettingsClosed;
+            settingsForm.Show();
+            settingsForm.Activate();
+        }
+
+        private void OnSettingsClosed(object sender, FormClosedEventArgs e)
+        {
+            SettingsForm form = settingsForm;
+            settingsForm = null;
+            if (form.DialogResult != DialogResult.OK) return;
+            var problems = new List<string>();
+            bool accessChanged = form.Result.EwsUrl != settings.EwsUrl || authenticationFailed;
+            settings = form.Result;
+            string saveProblem = settings.Save();
+            if (saveProblem != null)
+            {
+                AppLog.Append("settings not saved: " + saveProblem);
+                problems.Add("Не удалось сохранить " + AppSettings.FilePath + ": " + saveProblem);
+            }
+            if (form.NewCredential != null)
+            {
+                string credentialSaveProblem = CredentialStore.Write(form.NewCredential);
+                if (credentialSaveProblem == null)
+                {
+                    credential = form.NewCredential;
+                    credentialProblem = null;
+                    accessChanged = true;
+                    AppLog.Append("credential saved");
+                }
+                else
+                {
+                    AppLog.Append("credential not saved: " + credentialSaveProblem);
+                    accessChanged = false;
+                    problems.Add("Не удалось сохранить логин и пароль в диспетчере учётных данных Windows: " + credentialSaveProblem);
+                }
+            }
+            if (form.RemoveCredential)
+            {
+                string removeProblem = CredentialStore.Delete();
+                if (removeProblem == null)
+                {
+                    credential = null;
+                    credentialProblem = null;
+                    accessChanged = true;
+                    AppLog.Append("credential removed");
+                }
+                else
+                {
+                    AppLog.Append("credential not removed: " + removeProblem);
+                    problems.Add("Не удалось удалить логин из диспетчера учётных данных Windows: " + removeProblem);
+                }
+            }
+            string optionsProblem = SaveOptions(form);
+            if (optionsProblem != null) problems.Add(optionsProblem);
+            Usage.Hit("settings.save");
+            AppLog.Append("settings: ews host=" + EwsHost(settings.EwsUrl) + ", vpn adapters=" + (settings.ChecksVpn ? AppSettings.JoinList(settings.VpnAdapters) : "not checked") + ", lead=" + settings.LeadMinutes);
+            vpnUp = null;
+            UpdateUsageState();
+            if (accessChanged) RefreshNow(true);
+            else Tick();
+            if (problems.Count > 0) MessageBox.Show(string.Join(Environment.NewLine + Environment.NewLine, problems.ToArray()), AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private string SaveOptions(SettingsForm form)
+        {
+            try
+            {
+                if (form.AutoUpdateChosen != AutoUpdateCheck.IsEnabled) AutoUpdateCheck.Set(form.AutoUpdateChosen);
+                if (form.UsageStatisticsChosen != UsageConsent.IsGiven) Usage.SetConsent(form.UsageStatisticsChosen);
+                return null;
+            }
+            catch (IOException error)
+            {
+                AppLog.Append("options not saved: " + error.Message);
+                return "Не удалось сохранить выбор проверки обновлений и статистики: " + error.Message;
+            }
+            catch (UnauthorizedAccessException error)
+            {
+                AppLog.Append("options not saved: " + error.Message);
+                return "Не удалось сохранить выбор проверки обновлений и статистики: " + error.Message;
+            }
+        }
+
+        private void OnStartupClick(object sender, EventArgs e)
+        {
+            bool enabled = Autostart.IsEnabled();
+            Usage.Hit(enabled ? "menu.autostart_off" : "menu.autostart_on");
+            string problem = enabled ? Autostart.Disable() : Autostart.Enable(Application.ExecutablePath);
+            Usage.SetState("autostart", Autostart.IsEnabled());
+            if (problem != null) MessageBox.Show(problem, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void OnLogClick(object sender, EventArgs e)
+        {
+            Usage.Hit("menu.journal");
+            if (!File.Exists(AppLog.FilePath)) AppLog.Append("log created");
+            try
+            {
+                using (Process.Start(SystemTools.Notepad, "\"" + AppLog.FilePath + "\""))
+                {
+                }
+            }
+            catch (System.ComponentModel.Win32Exception error)
+            {
+                AppLog.Append("notepad failed: " + error.Message);
+                MessageBox.Show("Не удалось открыть Блокнот: " + error.Message + Environment.NewLine + "Журнал лежит в " + AppLog.FilePath,
+                    AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void ShowUpdateBalloon(string version)
+        {
+            trayIcon.ShowBalloonTip(10000, AppTitle, "Вышла версия " + version + ". Нажми, чтобы скачать и установить.", ToolTipIcon.Info);
+            updateBalloonShown = true;
+        }
+
+        private void OnBalloonClicked(object sender, EventArgs e)
+        {
+            if (!updateBalloonShown) return;
+            updateBalloonShown = false;
+            Usage.Hit("update.notify_open");
+            UpdateForm.ShowSingle();
+        }
+
+        private void UpdateUsageState()
+        {
+            Usage.SetState("autostart", Autostart.IsEnabled());
+            Usage.SetState("auto_update", AutoUpdateCheck.IsEnabled);
+            Usage.SetState("crash_reports", CrashReportConsent.IsGiven);
+            Usage.SetState("lead_default", settings.LeadMinutes);
+            Usage.SetState("meetings_custom", preferences.Count - preferences.OffCount);
+            Usage.SetState("meetings_off", preferences.OffCount);
+            Usage.SetState("vpn_check", settings.ChecksVpn);
+            Usage.SetState("credential", HasCredential);
+            Usage.SetState("meetings_today", cache.Meetings.Count);
+        }
+
+        private static string EwsHost(string url)
+        {
+            Uri uri;
+            return Uri.TryCreate(url, UriKind.Absolute, out uri) ? uri.Host : "invalid";
+        }
+
+        private static string Capitalize(string text)
+        {
+            return string.IsNullOrEmpty(text) ? "" : char.ToUpper(text[0]) + text.Substring(1);
+        }
+    }
+}

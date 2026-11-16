@@ -1,0 +1,8 @@
+MeetingBell.exe
+MeetingBell.old.exe
+MeetingBell.exe.config
+Uninstall.exe
+installer/obj/
+tests/obj/
+dist/
+__pycache__/

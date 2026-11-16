@@ -1,0 +1,451 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Xml;
+
+namespace MeetingBell
+{
+    internal static class Tests
+    {
+        private static int failures;
+        private static int passed;
+
+        private static int Main(string[] args)
+        {
+            if (args.Length > 0 && args[0] == "live") return Live(args);
+            string sandbox = Path.Combine(Path.GetTempPath(), "MeetingBellTests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sandbox);
+            Redirect(typeof(MeetingPreferences), "FilePath", Path.Combine(sandbox, "meetings.txt"));
+            Redirect(typeof(TodayCache), "FilePath", Path.Combine(sandbox, "today.txt"));
+            Redirect(typeof(AppSettings), "FilePath", Path.Combine(sandbox, "settings.txt"));
+            try
+            {
+                PlannerDefaultLead();
+                PlannerCustomAndOff();
+                PlannerLateAndAllDay();
+                PlannerSnooze();
+                Links();
+                Preferences();
+                Cache();
+                Settings();
+                Words();
+                Urls();
+                EwsParsing();
+                MovedAndSeries();
+                KnownLinks();
+                Boundaries();
+                Credentials();
+                LinkChoice();
+            }
+            finally
+            {
+                Directory.Delete(sandbox, true);
+            }
+            Console.WriteLine("passed " + passed + ", failed " + failures);
+            return failures == 0 ? 0 : 1;
+        }
+
+        private static void Redirect(Type type, string field, string value)
+        {
+            type.GetField(field, BindingFlags.Public | BindingFlags.Static).SetValue(null, value);
+        }
+
+        private static void Check(bool condition, string name)
+        {
+            if (condition) passed++;
+            else
+            {
+                failures++;
+                Console.WriteLine("FAIL " + name);
+            }
+        }
+
+        private static Meeting At(DateTime start, int minutes, string uid)
+        {
+            return new Meeting { Uid = uid, Subject = "s", Start = start, End = start.AddMinutes(minutes) };
+        }
+
+        private static MeetingPreferences EmptyPreferences()
+        {
+            File.Delete(MeetingPreferences.FilePath);
+            return MeetingPreferences.Load(DateTime.Today);
+        }
+
+        private static void PlannerDefaultLead()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            var meetings = new List<Meeting> { At(start, 30, "a") };
+            var planner = new ReminderPlanner();
+            var shown = new HashSet<string>();
+            MeetingPreferences preferences = EmptyPreferences();
+            Check(planner.Due(meetings, start.AddMinutes(-2), 1, preferences, shown).Count == 0, "default lead: 2 min before — not yet");
+            Check(planner.Due(meetings, start.AddMinutes(-1), 1, preferences, shown).Count == 1, "default lead: 1 min before — due");
+            shown.Add(meetings[0].ReminderKey);
+            Check(planner.Due(meetings, start.AddSeconds(-30), 1, preferences, shown).Count == 0, "shown reminder is not repeated");
+            Check(planner.Due(meetings, start, 0, preferences, new HashSet<string>()).Count == 1, "lead 0: due at start");
+        }
+
+        private static void PlannerCustomAndOff()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            var series = new List<Meeting> { At(start, 30, "series"), At(start.AddHours(2), 30, "other") };
+            MeetingPreferences preferences = EmptyPreferences();
+            preferences.Set("series", 5, DateTime.Today);
+            var planner = new ReminderPlanner();
+            List<Meeting> due = planner.Due(series, start.AddMinutes(-5), 1, preferences, new HashSet<string>());
+            Check(due.Count == 1 && due[0].Uid == "series", "custom lead 5 min fires 5 min before");
+            preferences.Set("series", MeetingPreferences.Off, DateTime.Today);
+            Check(planner.Due(series, start, 1, preferences, new HashSet<string>()).Count == 0, "off meeting never fires");
+            var nextDay = new List<Meeting> { At(start.AddDays(1), 30, "series") };
+            Check(planner.Due(nextDay, start.AddDays(1), 1, preferences, new HashSet<string>()).Count == 0, "off applies to the whole series");
+        }
+
+        private static void PlannerLateAndAllDay()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            var meetings = new List<Meeting> { At(start, 60, "late") };
+            MeetingPreferences preferences = EmptyPreferences();
+            var planner = new ReminderPlanner();
+            Check(planner.Due(meetings, start.AddMinutes(4), 1, preferences, new HashSet<string>()).Count == 1, "late start within 5 min still reminds");
+            Check(planner.Due(meetings, start.AddMinutes(6), 1, preferences, new HashSet<string>()).Count == 0, "more than 5 min late — no reminder");
+            var allDay = new List<Meeting> { new Meeting { Uid = "d", Start = start.Date, End = start.Date.AddDays(1), IsAllDay = true } };
+            Check(planner.Due(allDay, start.Date, 60, preferences, new HashSet<string>()).Count == 0, "all-day meeting has no reminder");
+            var shortOne = new List<Meeting> { At(start, 2, "short") };
+            Check(planner.Due(shortOne, start.AddMinutes(3), 1, preferences, new HashSet<string>()).Count == 0, "finished meeting has no reminder");
+        }
+
+        private static void PlannerSnooze()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            var meetings = new List<Meeting> { At(start, 30, "z") };
+            MeetingPreferences preferences = EmptyPreferences();
+            var planner = new ReminderPlanner();
+            var shown = new HashSet<string> { meetings[0].ReminderKey };
+            planner.Snooze(meetings[0], start.AddMinutes(1), shown);
+            Check(planner.Due(meetings, start.AddSeconds(30), 1, preferences, shown).Count == 0, "snoozed: not before the time");
+            Check(!shown.Contains(meetings[0].ReminderKey), "snooze removes the shown mark so a restart reminds again");
+            Check(planner.Due(meetings, start.AddMinutes(1), 1, preferences, shown).Count == 1, "snoozed: fires again after a minute");
+            shown.Add(meetings[0].ReminderKey);
+            Check(planner.Due(meetings, start.AddMinutes(2), 1, preferences, shown).Count == 0, "snooze fires once");
+            planner.Snooze(meetings[0], start.AddMinutes(40), shown);
+            Check(planner.Due(meetings, start.AddMinutes(40), 1, preferences, shown).Count == 0, "snooze after the end does not fire");
+            planner.Snooze(meetings[0], start.AddMinutes(7), shown);
+            Check(planner.Due(meetings, start.AddMinutes(7), 1, preferences, shown).Count == 1, "snooze fires past the late limit while the meeting goes");
+            shown.Add(meetings[0].ReminderKey);
+            Check(new ReminderPlanner().Due(meetings, start.AddMinutes(5), 1, preferences, new HashSet<string>()).Count == 0, "exactly 5 min late — no reminder");
+            var restarted = new ReminderPlanner();
+            var afterSnooze = new HashSet<string>();
+            Check(restarted.Due(meetings, start.AddMinutes(2), 1, preferences, afterSnooze).Count == 1, "after restart a snoozed meeting reminds within the late limit");
+            Check(restarted.Due(meetings, start.AddMinutes(6), 1, preferences, afterSnooze).Count == 0, "after restart late limit still applies");
+        }
+
+        private static void Credentials()
+        {
+            var saved = new ExchangeCredential { UserName = "u", Password = "p" };
+            CredentialChoice same = CredentialChoice.Decide(saved, "u ", "");
+            Check(same.Problem == null && same.Credential.Password == "p" && !same.Changed && !same.Remove, "same login keeps saved password");
+            Check(CredentialChoice.Decide(saved, "v", "").Problem != null, "new login requires a password");
+            CredentialChoice cleared = CredentialChoice.Decide(saved, "", "");
+            Check(cleared.Remove && !cleared.Changed && cleared.Problem == null, "empty login removes saved credential");
+            CredentialChoice newPassword = CredentialChoice.Decide(saved, "u", "q");
+            Check(newPassword.Changed && newPassword.Credential.Password == "q", "new password saved");
+            CredentialChoice otherLogin = CredentialChoice.Decide(saved, "v", "x");
+            Check(otherLogin.Changed && !otherLogin.Remove && otherLogin.Problem == null && otherLogin.Credential.UserName == "v", "new login with password saved");
+            Check(!CredentialChoice.Decide(saved, "u", "p").Changed, "same login and password is not a change");
+            CredentialChoice first = CredentialChoice.Decide(null, "u", "p");
+            Check(first.Changed && !first.Remove, "first credential saved");
+            Check(CredentialChoice.Decide(null, "u", "").Problem != null, "first login requires a password");
+            Check(!CredentialChoice.Decide(null, "", "").Changed && !CredentialChoice.Decide(null, "", "").Remove, "nothing entered and nothing saved");
+        }
+
+        private static void LinkChoice()
+        {
+            var requested = new Dictionary<string, Meeting> { { "X", At(DateTime.Today, 30, "x") }, { "Y", At(DateTime.Today, 30, "y") } };
+            XmlDocument partial = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("X", null, "", "", "", "<t:Body BodyType=\"Text\">Повестка https://example.com/doc</t:Body>")
+                + "</m:Items></m:GetItemResponseMessage><m:GetItemResponseMessage ResponseClass=\"Error\"><m:ResponseCode>ErrorServerBusy</m:ResponseCode></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            HashSet<string> read = EwsClient.ApplyBodies(partial, requested);
+            Check(read.Contains("X") && requested["X"].Link == null, "read body without conference link stays without link");
+            List<Meeting> unread = EwsClient.Unread(requested, read);
+            Check(unread.Count == 1 && unread[0].Uid == "y", "only unread bodies are reported");
+            Check(MeetingLinks.Find("https://vk.com/callcenter") == null && MeetingLinks.Find("https://vk.com/call") != null, "path entry matches whole segment");
+            Check(MeetingLinks.Find("https://zoom.us@evil.example/j/1") == null, "user info cannot fake the host");
+            Check(MeetingLinks.Find("https://ZOOM.US/j/1") != null, "host case ignored");
+            var room = new Meeting { Uid = "r", Location = "Переговорная, https://rooms.example.com/5", Start = DateTime.Today, End = DateTime.Today.AddHours(1) };
+            var conference = new Meeting { Uid = "c", Location = "https://rooms.example.com/6", Link = "https://zoom.us/j/1", Start = DateTime.Today, End = DateTime.Today.AddHours(1) };
+            TrayApplication.UseLocationLinks(new List<Meeting> { room, conference });
+            Check(room.Link == "https://rooms.example.com/5" && conference.Link == "https://zoom.us/j/1", "location address is a fallback after conference links");
+            Check(MeetingLinks.JoinText(room.Link) == "Подключиться (rooms.example.com)" && MeetingLinks.JoinText(conference.Link) == "Подключиться", "non-conference link shows its host");
+            Check(MeetingLinks.Find("https://a:b@zoom.us/j/1 https://zoom.us/j/2") == "https://zoom.us/j/2", "conference link with user info skipped");
+            var unreadRoom = new Meeting { Uid = "m", Location = "https://rooms.example.com/5", Start = DateTime.Today, End = DateTime.Today.AddHours(1) };
+            var knownRoom = new Meeting { Uid = "m", Start = DateTime.Today, End = DateTime.Today.AddHours(1), Link = "https://zoom.us/j/1" };
+            TrayApplication.MergeLinks(new List<Meeting> { unreadRoom }, new List<Meeting> { unreadRoom }, new List<Meeting> { knownRoom });
+            Check(unreadRoom.Link == "https://zoom.us/j/1", "known conference link wins over location fallback");
+            var bare = At(DateTime.Today, 30, "b");
+            TrayApplication.UseLocationLinks(new List<Meeting> { bare });
+            Check(bare.Link == null, "meeting without location keeps no link");
+            Check(MeetingLinks.AnyWebLink("https://u:p@a.example/ https://b.example/") == "https://b.example/", "fallback skips link with credentials");
+            Check(MeetingLinks.DisplayHost("https://rooms.example.com/5") == "rooms.example.com", "ascii host shown as is");
+            var again = new Dictionary<string, Meeting> { { "X", At(DateTime.Today, 30, "x") }, { "Y", At(DateTime.Today, 30, "y") } };
+            Meeting oldX = At(DateTime.Today, 30, "x");
+            oldX.Link = "https://zoom.us/j/x";
+            Meeting oldY = At(DateTime.Today, 30, "y");
+            oldY.Link = "https://zoom.us/j/y";
+            TrayApplication.KeepKnownLinks(EwsClient.Unread(again, EwsClient.ApplyBodies(partial, again)), new List<Meeting> { oldX, oldY });
+            Check(again["X"].Link == null && again["Y"].Link == "https://zoom.us/j/y", "known link returns only to meetings whose body did not arrive");
+            Check(MeetingLinks.JoinText("https://zооm.us/j/1").StartsWith("Подключиться (xn--") && MeetingLinks.DisplayHost("https://zооm.us/j/1").StartsWith("xn--"), "homoglyph host shown as punycode");
+        }
+
+        private static void Links()
+        {
+            Check(MeetingLinks.Find("Zoom https://us02web.zoom.us/j/123?pwd=abc).") == "https://us02web.zoom.us/j/123?pwd=abc", "zoom link from location without trailing punctuation");
+            Check(MeetingLinks.Find("Переговорная 5") == null, "no link in a room name");
+            Check(MeetingLinks.Find("см. https://example.com/room") == null, "non-conference link in location is not a meeting link");
+            Check(MeetingLinks.Find("Agenda https://example.com/doc and https://telemost.yandex.ru/j/42 join") == "https://telemost.yandex.ru/j/42", "conference link from body skips other links");
+            Check(MeetingLinks.Find("Agenda https://example.com/doc") == null, "body without conference link");
+            Check(MeetingLinks.Find("<https://teams.microsoft.com/l/meetup-join/19%3a>") == "https://teams.microsoft.com/l/meetup-join/19%3a", "teams link in angle brackets");
+            Check(!MeetingLinks.IsWebLink("file:///C:/Windows/System32/calc.exe"), "file link rejected");
+            Check(!MeetingLinks.IsWebLink("javascript:alert(1)"), "javascript link rejected");
+            Check(!MeetingLinks.IsWebLink("https://user:pass@example.com/"), "link with credentials rejected");
+            Check(MeetingLinks.IsWebLink("https://zoom.us/j/1"), "https link accepted");
+            Check(MeetingLinks.Open("ms-settings:") != null, "non-web link is not opened");
+        }
+
+        private static void Preferences()
+        {
+            MeetingPreferences preferences = EmptyPreferences();
+            DateTime today = new DateTime(2026, 11, 16);
+            Check(preferences.Set("uid-1", 10, today) == null, "preference saved");
+            Check(preferences.Set("uid-2", MeetingPreferences.Off, today) == null, "off saved");
+            MeetingPreferences reloaded = MeetingPreferences.Load(today);
+            int lead;
+            Check(reloaded.TryGetLead("uid-1", out lead) && lead == 10, "custom lead survives reload");
+            Check(reloaded.TryGetLead("uid-2", out lead) && lead == MeetingPreferences.Off, "off survives reload");
+            Check(reloaded.Count == 2 && reloaded.OffCount == 1, "counts");
+            reloaded.MarkSeen(new List<Meeting>(), today.AddDays(35));
+            Check(MeetingPreferences.Load(today.AddDays(35)).TryGetLead("uid-2", out lead), "monthly series keeps its preference after 35 days");
+            reloaded.MarkSeen(new List<Meeting> { At(today.AddDays(101).AddHours(9), 30, "uid-1") }, today.AddDays(101));
+            MeetingPreferences later = MeetingPreferences.Load(today.AddDays(101));
+            Check(later.TryGetLead("uid-1", out lead) && !later.TryGetLead("uid-2", out lead), "unseen for 100 days is forgotten, seen kept");
+            Check(later.Reset("uid-1") == null && !MeetingPreferences.Load(today).TryGetLead("uid-1", out lead), "reset removes preference");
+            File.WriteAllText(MeetingPreferences.FilePath, "{ broken");
+            MeetingPreferences broken = MeetingPreferences.Load(today);
+            Check(broken.LoadProblem != null && File.Exists(MeetingPreferences.FilePath + ".broken"), "broken file set aside");
+            Check(broken.Set("uid-3", 5, today) == null, "after broken file new preferences are saved");
+            File.WriteAllText(MeetingPreferences.FilePath, "{\"x\": {\"lead\": 999}, \"y\": {\"lead\": 15, \"seen\": \"2026-11-16\"}}");
+            MeetingPreferences ranged = MeetingPreferences.Load(today);
+            Check(!ranged.TryGetLead("x", out lead) && ranged.TryGetLead("y", out lead) && lead == 15, "out of range lead ignored");
+            using (new FileStream(MeetingPreferences.FilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                MeetingPreferences locked = MeetingPreferences.Load(today);
+                Check(locked.LoadProblem != null && locked.Set("z", 5, today) != null, "unreadable file is not overwritten");
+            }
+        }
+
+        private static void Cache()
+        {
+            DateTime today = DateTime.Today;
+            var cache = new TodayCache { Day = today, Fetched = today.AddHours(9) };
+            cache.Meetings.Add(new Meeting { Uid = "u", Subject = "Тема \"в кавычках\"", Start = today.AddHours(10), End = today.AddHours(11), Location = "Комната", Link = "https://zoom.us/j/1" });
+            cache.Meetings.Add(new Meeting { Uid = "v", Subject = "", Start = today, End = today.AddDays(1), IsAllDay = true, Link = "javascript:x" });
+            cache.Shown.Add("u|key");
+            Check(cache.Save() == null, "cache saved");
+            TodayCache loaded = TodayCache.Load(today, line => { });
+            Check(loaded.Meetings.Count == 2 && loaded.Meetings[0].Subject == "Тема \"в кавычках\"" && loaded.Meetings[0].Start == today.AddHours(10), "cache meetings survive");
+            Check(loaded.Meetings[1].IsAllDay && loaded.Meetings[1].Link == null, "all-day flag kept, unsafe link dropped");
+            Check(loaded.Shown.Contains("u|key") && loaded.Fetched == today.AddHours(9), "shown keys and fetch time survive");
+            TodayCache tomorrow = TodayCache.Load(today.AddDays(1), line => { });
+            Check(tomorrow.Meetings.Count == 0 && !tomorrow.Fetched.HasValue, "cache of another day ignored");
+            File.WriteAllText(TodayCache.FilePath, "not json");
+            Check(TodayCache.Load(today, line => { }).Meetings.Count == 0, "broken cache read as empty");
+        }
+
+        private static void Settings()
+        {
+            File.WriteAllText(AppSettings.FilePath, "ewsUrl=https://mail.example.org/EWS/Exchange.asmx\nvpnAdapters=Fortinet | WireGuard|fortinet\nleadMinutes=500\nunknown=1\n");
+            AppSettings loaded = AppSettings.Load();
+            Check(loaded.EwsUrl == "https://mail.example.org/EWS/Exchange.asmx", "ews url read");
+            Check(loaded.VpnAdapters.Count == 2 && loaded.VpnAdapters[1] == "WireGuard", "adapters parsed without duplicates");
+            Check(loaded.LeadMinutes == AppSettings.MaxLeadMinutes, "lead clamped");
+            loaded.VpnAdapters.Clear();
+            loaded.LeadMinutes = 0;
+            Check(loaded.Save() == null, "settings saved");
+            AppSettings again = AppSettings.Load();
+            Check(!again.ChecksVpn && again.LeadMinutes == 0, "empty adapter list and zero lead survive");
+            File.Delete(AppSettings.FilePath);
+            AppSettings defaults = AppSettings.Load();
+            Check(defaults.LeadMinutes == 1 && defaults.VpnAdapters.Count == 1 && defaults.EwsUrl.Contains("example.com"), "neutral defaults");
+        }
+
+        private static void Words()
+        {
+            Check(ReminderForm.Minutes(1) == "1 минуту", "1 минуту");
+            Check(ReminderForm.Minutes(3) == "3 минуты", "3 минуты");
+            Check(ReminderForm.Minutes(5) == "5 минут", "5 минут");
+            Check(ReminderForm.Minutes(11) == "11 минут", "11 минут");
+            Check(ReminderForm.Minutes(21) == "21 минуту", "21 минуту");
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            Meeting meeting = At(start, 30, "w");
+            Check(ReminderForm.Timing(meeting, start.AddMinutes(-1)) == "14:00–14:30 · через 1 минуту", "timing before");
+            Check(ReminderForm.Timing(meeting, start) == "14:00–14:30 · начинается сейчас", "timing at start");
+            Check(ReminderForm.Timing(meeting, start.AddMinutes(3)) == "14:00–14:30 · идёт 3 минуты", "timing after");
+        }
+
+        private const string Envelope = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\"><s:Body>{0}</s:Body></s:Envelope>";
+
+        private static XmlDocument Xml(string body)
+        {
+            var document = new XmlDocument();
+            document.LoadXml(string.Format(Envelope, body));
+            return document;
+        }
+
+        private static string Item(string id, string uid, string subject, string start, string end, string extra)
+        {
+            return "<t:CalendarItem><t:ItemId Id=\"" + id + "\" ChangeKey=\"c\"/><t:Subject>" + subject + "</t:Subject><t:Start>" + start + "</t:Start><t:End>" + end + "</t:End>"
+                + (uid == null ? "" : "<t:UID>" + uid + "</t:UID>") + extra + "</t:CalendarItem>";
+        }
+
+        private static void EwsParsing()
+        {
+            string items = Item("A", "uid-late", "Поздняя", "2026-11-16T15:00:00Z", "2026-11-16T15:30:00Z", "<t:Location>https://zoom.us/j/9</t:Location>")
+                + Item("B", "uid-cancel", "Отменена", "2026-11-16T09:00:00Z", "2026-11-16T10:00:00Z", "<t:IsCancelled>true</t:IsCancelled>")
+                + Item("C", "uid-decline", "Отклонена", "2026-11-16T09:00:00Z", "2026-11-16T10:00:00Z", "<t:MyResponseType>Decline</t:MyResponseType>")
+                + Item("X", null, "Без UID", "2026-11-16T11:00:00Z", "2026-11-16T11:30:00Z", "<t:Location>Переговорная</t:Location>")
+                + Item("D", "uid-day", "Весь день", "2026-11-15T21:00:00Z", "2026-11-16T21:00:00Z", "<t:IsAllDayEvent>true</t:IsAllDayEvent>");
+            XmlDocument found = Xml("<m:FindItemResponse><m:ResponseMessages><m:FindItemResponseMessage ResponseClass=\"Success\"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder><t:Items>"
+                + items + "</t:Items></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>");
+            var withoutLinks = new Dictionary<string, Meeting>();
+            List<Meeting> meetings = EwsClient.ReadCalendarItems(EwsClient.CheckResponse(found), withoutLinks);
+            Check(meetings.Count == 3, "cancelled and declined meetings dropped");
+            Check(meetings.Count == 3 && meetings[0].IsAllDay && meetings[1].Uid == "X" && meetings[2].Uid == "uid-late", "sorted by start, item id replaces missing uid");
+            Check(meetings.Count == 3 && meetings[1].Start == new DateTime(2026, 11, 16, 11, 0, 0, DateTimeKind.Utc).ToLocalTime(), "utc start converted to local time");
+            Check(meetings.Count == 3 && meetings[2].Link == "https://zoom.us/j/9" && meetings[1].Link == null, "link from location");
+            Check(withoutLinks.ContainsKey("X") && !withoutLinks.ContainsKey("A"), "only meetings without link go to body fetch");
+            XmlDocument bodies = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Error\"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode></m:GetItemResponseMessage>"
+                + "<m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>" + Item("X", null, "", "", "", "<t:Body BodyType=\"Text\">Join https://example.com/doc https://zoom.us/j/1</t:Body>")
+                + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            HashSet<string> read = EwsClient.ApplyBodies(bodies, withoutLinks);
+            Check(meetings.Count == 3 && meetings[1].Link == "https://zoom.us/j/1", "conference link from body applied by item id despite another item error");
+            Check(read.Count == 1 && read.Contains("X"), "read bodies reported by item id");
+            XmlDocument busy = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Error\"><m:ResponseCode>ErrorServerBusy</m:ResponseCode></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            Check(EwsClient.ApplyBodies(busy, withoutLinks).Count == 0, "server refusing every body reports nothing read");
+            XmlDocument failed = Xml("<m:FindItemResponse><m:ResponseMessages><m:FindItemResponseMessage ResponseClass=\"Error\"><m:MessageText>denied</m:MessageText><m:ResponseCode>ErrorAccessDenied</m:ResponseCode></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>");
+            bool thrown = false;
+            try
+            {
+                EwsClient.CheckResponse(failed);
+            }
+            catch (CalendarException error)
+            {
+                thrown = !error.IsAuthentication && error.Message.Contains("ErrorAccessDenied");
+            }
+            Check(thrown, "error response message raises calendar error");
+        }
+
+        private static void MovedAndSeries()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            MeetingPreferences preferences = EmptyPreferences();
+            var planner = new ReminderPlanner();
+            var shown = new HashSet<string> { At(start, 30, "u").ReminderKey };
+            Check(planner.Due(new List<Meeting> { At(start.AddMinutes(30), 30, "u") }, start.AddMinutes(29), 1, preferences, shown).Count == 1, "moved meeting reminds again");
+            Check(planner.Due(new List<Meeting> { At(start, 30, "u") }, start.AddSeconds(-30), 1, preferences, shown).Count == 0, "same start is not repeated");
+            preferences.Set("s", 5, DateTime.Today);
+            var series = new List<Meeting> { At(start.AddHours(-4), 30, "s"), At(start.AddHours(2), 30, "s") };
+            var seriesShown = new HashSet<string> { series[0].ReminderKey };
+            List<Meeting> due = planner.Due(series, start.AddHours(2).AddMinutes(-5), 1, preferences, seriesShown);
+            Check(due.Count == 1 && due[0].Start == start.AddHours(2), "second meeting of a series reminds with series lead");
+            Meeting snoozed = At(start, 30, "f");
+            planner.Snooze(snoozed, start.AddMinutes(1), new HashSet<string>());
+            planner.Forget(snoozed);
+            Check(planner.Due(new List<Meeting> { snoozed }, start.AddMinutes(1), 1, preferences, new HashSet<string> { snoozed.ReminderKey }).Count == 0, "forgotten snooze does not fire");
+        }
+
+        private static void KnownLinks()
+        {
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            Meeting fresh = At(start, 30, "u");
+            Meeting own = At(start, 30, "v");
+            own.Link = "https://zoom.us/j/own";
+            Meeting moved = At(start.AddHours(1), 30, "w");
+            Meeting oldU = At(start, 30, "u");
+            oldU.Link = "https://zoom.us/j/1";
+            Meeting oldV = At(start, 30, "v");
+            oldV.Link = "https://zoom.us/j/old";
+            Meeting oldW = At(start, 30, "w");
+            oldW.Link = "https://zoom.us/j/w";
+            TrayApplication.KeepKnownLinks(new List<Meeting> { fresh, own, moved }, new List<Meeting> { oldU, oldV, oldW });
+            Check(fresh.Link == "https://zoom.us/j/1", "known link kept when body fetch failed");
+            Check(own.Link == "https://zoom.us/j/own", "fresh link is not overwritten");
+            Check(moved.Link == null, "link of another start is not carried");
+            Check(MeetingLinks.Find("https://zoom.us.evil.example/j/1 https://teams.microsoft.com/l/x") == "https://teams.microsoft.com/l/x", "look-alike host skipped");
+            Check(MeetingLinks.Find("https://evil.example/a.zoom.us") == null, "conference name in path is not a conference");
+            Check(MeetingLinks.Find("https://vk.com/call/join/1") != null && MeetingLinks.Find("https://vk.com/wall1") == null, "host with path entry");
+            Check(MeetingLinks.Find("https://company.trueconf.ru/c/1") != null, "subdomain of conference host");
+        }
+
+        private static void Boundaries()
+        {
+            DateTime today = new DateTime(2026, 11, 16);
+            MeetingPreferences preferences = EmptyPreferences();
+            preferences.Set("edge", 5, today);
+            preferences.MarkSeen(new List<Meeting>(), today.AddDays(100));
+            int lead;
+            Check(MeetingPreferences.Load(today.AddDays(100)).TryGetLead("edge", out lead), "kept on day 100");
+            File.WriteAllText(AppSettings.FilePath, "LEADMINUTES=5\newsUrl=\n");
+            AppSettings upper = AppSettings.Load();
+            Check(upper.LeadMinutes == 5 && upper.EwsUrl == AppSettings.DefaultEwsUrl, "key case ignored, empty url is default");
+            File.WriteAllText(AppSettings.FilePath, "leadMinutes=abc\n");
+            Check(AppSettings.Load().LeadMinutes == AppSettings.DefaultLeadMinutes, "garbage lead is default");
+            File.WriteAllText(AppSettings.FilePath, "leadMinutes=-5\n");
+            Check(AppSettings.Load().LeadMinutes == 0, "negative lead clamped to zero");
+            File.Delete(AppSettings.FilePath);
+            var update = new AppSettings { LeadMinutes = 7, EwsUrl = "https://old.example/EWS/Exchange.asmx" };
+            Check(update.ApplyInstallFields("https://a.example/EWS/Exchange.asmx", "Wg", false) == null && update.LeadMinutes == 7 && update.EwsUrl == "https://a.example/EWS/Exchange.asmx" && update.VpnAdapters[0] == "Wg", "installer fields applied, lead kept");
+            Check(update.ApplyInstallFields("http://x", "", false) != null && update.EwsUrl == "https://a.example/EWS/Exchange.asmx" && !update.ChecksVpn, "bad url rejected, empty adapter means no check");
+            var unread = new AppSettings { EwsUrl = "https://kept.example/EWS/Exchange.asmx", VpnAdapters = new List<string> { "Kept" } };
+            Check(unread.ApplyInstallFields("", "", true) == null && unread.EwsUrl == "https://kept.example/EWS/Exchange.asmx" && unread.VpnAdapters[0] == "Kept", "unread fields keep saved values");
+            var start = new DateTime(2026, 11, 16, 14, 0, 0);
+            Check(ReminderForm.Timing(At(start, 30, "t"), start.AddSeconds(-30)) == "14:00–14:30 · через 1 минуту", "half a minute before rounds up");
+        }
+
+        private static void Urls()
+        {
+            Check(EwsClient.CheckUrl("https://mail.example.com/EWS/Exchange.asmx") == null, "https url accepted");
+            Check(EwsClient.CheckUrl("http://mail.example.com/EWS/Exchange.asmx") != null, "http rejected");
+            Check(EwsClient.CheckUrl("https://u:p@mail.example.com/EWS") != null, "credentials in url rejected");
+            Check(EwsClient.CheckUrl("https://mail.example.com/EWS?x=1") != null, "query rejected");
+            Check(EwsClient.CheckUrl("mail") != null, "garbage rejected");
+        }
+
+        private static int Live(string[] args)
+        {
+            string url = Environment.GetEnvironmentVariable("EXCHANGE_EWS_URL");
+            var credential = new ExchangeCredential
+            {
+                UserName = Environment.GetEnvironmentVariable("EXCHANGE_USERNAME"),
+                Password = Environment.GetEnvironmentVariable("EXCHANGE_PASSWORD")
+            };
+            DateTime day = args.Length > 1 ? DateTime.Parse(args[1]) : DateTime.Today;
+            try
+            {
+                List<Meeting> meetings = new EwsClient(url, credential).Day(day);
+                Console.WriteLine("meetings: " + meetings.Count);
+                foreach (Meeting meeting in meetings)
+                {
+                    Console.WriteLine(meeting.Start.ToString("HH:mm") + "-" + meeting.End.ToString("HH:mm") + " allDay=" + meeting.IsAllDay
+                        + " uid=" + (meeting.Uid ?? "").Length + " link=" + (meeting.Link == null ? "none" : new Uri(meeting.Link).Host)
+                        + " location=" + (string.IsNullOrEmpty(meeting.Location) ? "empty" : "set"));
+                }
+            }
+            catch (CalendarException error)
+            {
+                Console.WriteLine("error: " + error.Message + " auth=" + error.IsAuthentication);
+                return 1;
+            }
+            return 0;
+        }
+    }
+}
