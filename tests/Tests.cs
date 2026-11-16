@@ -282,6 +282,17 @@ namespace MeetingBell
             string three = "https://a.b/ https://c.d/wxyz12 https://e.f/";
             List<TextLink> threeLinks = DescriptionForm.VisibleLinks(three, DescriptionForm.Shorten(three).Length - 1, 10);
             Check(DescriptionForm.Shorten(three) == "https://a.b/ https://c.d/wxyz…" && threeLinks.Count == 2 && threeLinks[0].Start == 10 && threeLinks[0].Length == 12 && threeLinks[1].Start == 23 && threeLinks[1].Length == 16 && threeLinks[1].Url == "https://c.d/wxyz12", "several links: whole, cut, hidden");
+            var toggle = new MenuClickToggle();
+            toggle.OnClosed(System.Windows.Forms.ToolStripDropDownCloseReason.AppClicked, "row-a", 1000);
+            Check(toggle.ConsumeJustClosed("row-a", 1100, 500) && !toggle.ConsumeJustClosed("row-a", 1150, 500), "click that closed the menu on the same row does not reopen it, once");
+            toggle.OnClosed(System.Windows.Forms.ToolStripDropDownCloseReason.AppClicked, "row-a", 1000);
+            Check(!toggle.ConsumeJustClosed("row-b", 1100, 500), "click on another row reopens the menu");
+            toggle.OnClosed(System.Windows.Forms.ToolStripDropDownCloseReason.AppClicked, "row-a", 1000);
+            Check(!toggle.ConsumeJustClosed("row-a", 1600, 500), "late click reopens the menu");
+            toggle.OnClosed(System.Windows.Forms.ToolStripDropDownCloseReason.ItemClicked, "row-a", 1000);
+            Check(!toggle.ConsumeJustClosed("row-a", 1100, 500), "menu closed by its item does not block the next click");
+            toggle.OnClosed(System.Windows.Forms.ToolStripDropDownCloseReason.AppClicked, "", int.MaxValue - 10);
+            Check(toggle.ConsumeJustClosed("", int.MinValue + 50, 500), "tick counter wrap handled");
             int overflow;
             List<string> split = DescriptionForm.SplitPeople("А; Б; и ещё 7", out overflow);
             Check(split.Count == 2 && overflow == 7 && DescriptionForm.SplitPeople("и ещё кто-то", out overflow).Count == 1 && overflow == 0, "server overflow tail parsed only as number");

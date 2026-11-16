@@ -288,6 +288,11 @@ namespace MeetingBell
             base.OnFormClosing(e);
         }
 
+        public string HeldKey
+        {
+            get { return heldKey; }
+        }
+
         public void ReleaseHeldRow()
         {
             if (heldKey == null) return;

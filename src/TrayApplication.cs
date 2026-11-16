@@ -30,6 +30,8 @@ namespace MeetingBell
         private readonly System.Windows.Forms.Timer tickTimer = new System.Windows.Forms.Timer();
         private readonly MeetingListForm listForm = new MeetingListForm();
         private readonly ContextMenuStrip meetingMenu = new ContextMenuStrip();
+        private readonly MenuClickToggle trayMenuToggle = new MenuClickToggle();
+        private readonly MenuClickToggle meetingMenuToggle = new MenuClickToggle();
         private readonly ReminderPlanner planner = new ReminderPlanner();
         private readonly List<ReminderForm> reminders = new List<ReminderForm>();
         private readonly Dictionary<string, DescriptionForm> descriptions = new Dictionary<string, DescriptionForm>();
@@ -93,7 +95,12 @@ namespace MeetingBell
             listForm.StatusClicked += OnStatusClicked;
             listForm.MailClicked += OnMailClicked;
             listForm.MenuRequested += OnListMenuRequested;
-            meetingMenu.Closed += (sender, e) => listForm.ReleaseHeldRow();
+            meetingMenu.Closed += (sender, e) =>
+            {
+                meetingMenuToggle.OnClosed(e.CloseReason, listForm.HeldKey, Environment.TickCount);
+                listForm.ReleaseHeldRow();
+            };
+            trayIcon.ContextMenuStrip.Closed += (sender, e) => trayMenuToggle.OnClosed(e.CloseReason, "", Environment.TickCount);
             tickTimer.Interval = TickMs;
             tickTimer.Tick += (sender, e) => Tick();
             UpdateTray();
@@ -663,6 +670,7 @@ namespace MeetingBell
 
         private void OnListMenuRequested(Point at)
         {
+            if (trayMenuToggle.ConsumeJustClosed("", Environment.TickCount, SystemInformation.DoubleClickTime)) return;
             Usage.Hit("list.menu");
             meetingMenu.Close();
             SetForegroundWindow(listForm.Handle);
@@ -683,6 +691,11 @@ namespace MeetingBell
 
         private void OnMeetingClicked(Meeting meeting, Point at)
         {
+            if (meetingMenuToggle.ConsumeJustClosed(meeting.ReminderKey, Environment.TickCount, SystemInformation.DoubleClickTime))
+            {
+                listForm.ReleaseHeldRow();
+                return;
+            }
             meetingMenu.Items.Clear();
             var join = new ToolStripMenuItem(meeting.Link != null ? MeetingLinks.JoinText(meeting.Link) : "Подключиться", null, (s, a) =>
             {
