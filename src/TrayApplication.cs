@@ -771,12 +771,14 @@ namespace MeetingBell
             ThreadPool.QueueUserWorkItem(state =>
             {
                 List<Meeting> meetings = null;
+                List<Meeting> unreadBodies = new List<Meeting>();
                 string error = null;
                 bool authentication = false;
                 try
                 {
                     var client = new EwsClient(url, used);
                     meetings = client.Day(day);
+                    unreadBodies = client.UnreadBodies;
                     if (client.BodiesProblem != null) AppLog.Append("day " + offset + " invitation texts not loaded: " + client.BodiesProblem);
                 }
                 catch (CalendarException failure)
@@ -789,11 +791,11 @@ namespace MeetingBell
                     AppLog.Append("day " + offset + " fetch failed: " + failure);
                     error = "внутренняя ошибка: " + failure.Message;
                 }
-                Post(() => OnOtherDayLoaded(generation, day, offset, meetings, error, authentication));
+                Post(() => OnOtherDayLoaded(generation, day, offset, meetings, unreadBodies, error, authentication));
             });
         }
 
-        private void OnOtherDayLoaded(int generation, DateTime day, int offset, List<Meeting> meetings, string error, bool authentication)
+        private void OnOtherDayLoaded(int generation, DateTime day, int offset, List<Meeting> meetings, List<Meeting> unreadBodies, string error, bool authentication)
         {
             if (generation != otherDaysGeneration) return;
             otherDayLoading = false;
@@ -816,7 +818,7 @@ namespace MeetingBell
                 }
                 else
                 {
-                    UseLocationLinks(meetings);
+                    MergeLinks(meetings, unreadBodies, other.Meetings ?? new List<Meeting>());
                     other.Meetings = meetings;
                     other.Fetched = DateTime.Now;
                     other.Failed = false;
