@@ -261,6 +261,14 @@ namespace MeetingBell
             Check(DescriptionForm.Collapse("Ян <y@ex.ru>; Ли <l@ex.ru>; Бо <b@ex.ru>; Ге <g@ex.ru>", out hiddenPeople) == "Ян <y@ex.ru>; Ли <l@ex.ru>" && hiddenPeople == 2, "whole names up to 30 chars, rest counted");
             Check(DescriptionForm.Collapse("Иван Смирнов <ivan.smirnov@example.com>; Ли <l@ex.ru>; и ещё 34", out hiddenPeople) == "Иван Смирнов <ivan.smirnov@ex…" && hiddenPeople == 35, "long first name cut, server overflow added");
             Check(DescriptionForm.Collapse("Команда платежей <payments@example.com>", out hiddenPeople).EndsWith("…") && hiddenPeople == 0, "single long name cut without count");
+            string longWhere = "Переговорная 5; https://zoom.us/j/1234567890?pwd=abcdef";
+            string shortWhere = DescriptionForm.Shorten(longWhere);
+            Check(shortWhere == "Переговорная 5; https://zoom.…" && DescriptionForm.Shorten("Переговорная 5") == "Переговорная 5", "location shortened to 30 chars");
+            List<TextLink> cutLinks = DescriptionForm.VisibleLinks(longWhere, shortWhere.Length - 1, 100);
+            Check(cutLinks.Count == 1 && cutLinks[0].Start == 116 && cutLinks[0].Length == 13 && cutLinks[0].Url == "https://zoom.us/j/1234567890?pwd=abcdef", "cut link stays clickable with the full address");
+            Check(DescriptionForm.VisibleLinks("Зал; " + new string('x', 30) + " https://a.example/", 29, 0).Count == 0, "link beyond the cut is not shown");
+            List<TextLink> fullLinks = DescriptionForm.VisibleLinks(longWhere, longWhere.Length, 7);
+            Check(fullLinks.Count == 1 && fullLinks[0].Start == 23 && fullLinks[0].Length == 39, "expanded location link covers the whole address");
             int overflow;
             List<string> split = DescriptionForm.SplitPeople("А; Б; и ещё 7", out overflow);
             Check(split.Count == 2 && overflow == 7 && DescriptionForm.SplitPeople("и ещё кто-то", out overflow).Count == 1 && overflow == 0, "server overflow tail parsed only as number");

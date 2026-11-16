@@ -17,7 +17,9 @@ namespace MeetingBell
         private readonly Meeting meeting;
         private readonly RichTextBox text;
         private readonly Font titleFont;
+        private const int NoticeMs = 1500;
         private readonly HashSet<string> expanded = new HashSet<string>();
+        private readonly ToolTip notice = new ToolTip();
         private List<TextLink> links = new List<TextLink>();
         private string plain = "";
 
@@ -100,7 +102,10 @@ namespace MeetingBell
             int linksFrom = text.TextLength;
             Field("От", meeting.Organizer);
             Field("Когда", When(meeting));
-            Field("Где", string.IsNullOrWhiteSpace(meeting.Location) ? null : meeting.Location.Trim());
+            int whereStart = text.TextLength;
+            var whereLinks = new List<TextLink>();
+            LocationField("Где", meeting.Location, toggles, whereLinks);
+            int whereEnd = text.TextLength;
             PeopleField("Кому", meeting.RequiredAttendees, toggles);
             PeopleField("Копия", meeting.OptionalAttendees, toggles);
             Append("\n", Font, ForeColor);
@@ -108,9 +113,12 @@ namespace MeetingBell
             else Append(meeting.Description.Replace("\r\n", "\n"), Font, ForeColor);
             plain = text.Text;
             links = new List<TextLink>(toggles);
+            links.AddRange(whereLinks);
             foreach (TextLink link in MeetingLinks.WebLinks(plain.Substring(linksFrom)))
             {
-                links.Add(new TextLink(linksFrom + link.Start, link.Length, link.Url));
+                int start = linksFrom + link.Start;
+                if (start < whereEnd && start + link.Length > whereStart) continue;
+                links.Add(new TextLink(start, link.Length, link.Url));
             }
             using (var underline = new Font(Font, FontStyle.Underline))
             {
@@ -154,6 +162,46 @@ namespace MeetingBell
             }
             hidden = people.Count - count + more;
             return shown;
+        }
+
+        internal static string Shorten(string value)
+        {
+            if (value.Length <= CollapsedLength) return value;
+            int cut = char.IsHighSurrogate(value[CollapsedLength - 2]) ? CollapsedLength - 2 : CollapsedLength - 1;
+            return value.Substring(0, cut).TrimEnd() + "…";
+        }
+
+        internal static List<TextLink> VisibleLinks(string value, int visibleLength, int offset)
+        {
+            var visible = new List<TextLink>();
+            foreach (TextLink link in MeetingLinks.WebLinks(value))
+            {
+                if (link.Start >= visibleLength) continue;
+                visible.Add(new TextLink(offset + link.Start, Math.Min(link.Length, visibleLength - link.Start), link.Url));
+            }
+            return visible;
+        }
+
+        private void LocationField(string label, string location, List<TextLink> toggles, List<TextLink> whereLinks)
+        {
+            if (string.IsNullOrWhiteSpace(location)) return;
+            string value = string.Join(" ", location.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)).Trim();
+            Append(label + ":  ", Font, Muted);
+            int valueStart = text.TextLength;
+            string shown = Shorten(value);
+            if (shown == value || expanded.Contains(label))
+            {
+                Append(value, Font, ForeColor);
+                whereLinks.AddRange(VisibleLinks(value, value.Length, valueStart));
+                if (shown != value) Toggle("свернуть", CollapseTarget + label, toggles);
+            }
+            else
+            {
+                Append(shown, Font, ForeColor);
+                whereLinks.AddRange(VisibleLinks(value, shown.Length - 1, valueStart));
+                Toggle("показать полностью", ExpandTarget + label, toggles);
+            }
+            Append("\n", Font, ForeColor);
         }
 
         private void PeopleField(string label, string value, List<TextLink> toggles)
@@ -208,8 +256,31 @@ namespace MeetingBell
             return links.Find(link => link.Contains(index));
         }
 
+        private void CopyLink(TextLink link, Point at)
+        {
+            string shown;
+            try
+            {
+                Clipboard.SetText(link.Url);
+                shown = "Ссылка скопирована";
+                Usage.Hit("description.copy");
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                shown = "Не удалось скопировать: буфер обмена занят";
+            }
+            AppLog.Append(shown == "Ссылка скопирована" ? "description link copied" : "description link not copied");
+            notice.Show(shown, text, at.X + Font.Height / 2, at.Y + Font.Height, NoticeMs);
+        }
+
         private void OnTextMouseUp(object sender, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Right)
+            {
+                TextLink target = LinkAt(e.Location);
+                if (target != null && !target.Url.StartsWith("#")) CopyLink(target, e.Location);
+                return;
+            }
             if (e.Button != MouseButtons.Left || text.SelectionLength > 0) return;
             TextLink link = LinkAt(e.Location);
             if (link == null) return;
@@ -230,7 +301,11 @@ namespace MeetingBell
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) titleFont.Dispose();
+            if (disposing)
+            {
+                titleFont.Dispose();
+                notice.Dispose();
+            }
             base.Dispose(disposing);
         }
     }

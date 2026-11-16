@@ -6,7 +6,7 @@ namespace MeetingBell
     internal static class AppIdentity
     {
         public const string Name = "MeetingBell";
-        public const string Version = "1.2";
+        public const string Version = "1.3";
         public const string UpdateSetupArguments = "";
         public const string UpdateKeeps = "настройки, логин Exchange и настройки встреч сохранятся";
         public const string ExecutableName = "MeetingBell.exe";
