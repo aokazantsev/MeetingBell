@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Globalization;
 using System.Windows.Forms;
 
 namespace MeetingBell
@@ -22,7 +21,8 @@ namespace MeetingBell
         private static readonly Color Separator = Color.FromArgb(225, 225, 225);
         private static readonly Color Link = Color.FromArgb(0, 102, 204);
         private const string OpenText = "Открыть";
-        private static readonly CultureInfo Russian = new CultureInfo("ru-RU");
+        private const string BackText = "<";
+        private const string ForwardText = ">";
 
         private readonly Font titleFont;
         private readonly Font rowFont;
@@ -46,12 +46,20 @@ namespace MeetingBell
         private Rectangle mailBounds;
         private Rectangle mailOpenBounds;
         private bool hoverMail;
+        private string title = "";
+        private string emptyText = "";
+        private bool canBack;
+        private bool canForward;
+        private Rectangle backBounds;
+        private Rectangle forwardBounds;
+        private int hoverArrow;
 
         public event Action<Meeting, Point> MeetingClicked;
         public event Action StatusClicked;
         public event Action MailClicked;
         public event Action<Point> MenuRequested;
         public event Action<MouseButtons, string> Pressed;
+        public event Action<int> DayStepRequested;
 
         public MeetingListForm()
         {
@@ -87,8 +95,12 @@ namespace MeetingBell
             }
         }
 
-        public void Populate(List<Meeting> list, DateTime current, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen, Point anchor)
+        public void Populate(List<Meeting> list, DateTime current, string dayTitle, bool back, bool forward, string empty, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen, Point anchor)
         {
+            title = dayTitle;
+            canBack = back;
+            canForward = forward;
+            emptyText = empty;
             mailText = mail;
             mailAction = mailCanOpen ? OpenText : null;
             meetings = list;
@@ -113,6 +125,9 @@ namespace MeetingBell
         private void Arrange(int maxHeight)
         {
             rowBounds.Clear();
+            int arrowWidth = TextRenderer.MeasureText(BackText, titleFont).Width + padding / 2;
+            backBounds = new Rectangle(padding / 2, padding - padding / 4, arrowWidth, titleFont.Height + padding / 2);
+            forwardBounds = new Rectangle(Width - padding / 2 - arrowWidth, padding - padding / 4, arrowWidth, titleFont.Height + padding / 2);
             int top = padding + titleFont.Height + padding / 3;
             int mailRow = rowFont.Height + padding;
             statusBounds = new Rectangle(0, top, Width, rowFont.Height);
@@ -156,18 +171,32 @@ namespace MeetingBell
             {
                 graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
             }
-            string title = "Сегодня, " + DateTime.Today.ToString("d MMMM, dddd", Russian);
-            TextRenderer.DrawText(graphics, title, titleFont, new Point(padding, padding), ForeColor, TextFormatFlags.NoPrefix);
+            PaintArrow(graphics, BackText, backBounds, canBack, hoverArrow == -1);
+            PaintArrow(graphics, ForwardText, forwardBounds, canForward, hoverArrow == 1);
+            var titleBox = new Rectangle(backBounds.Right, padding, forwardBounds.Left - backBounds.Right, titleFont.Height);
+            TextRenderer.DrawText(graphics, title ?? "", titleFont, titleBox, ForeColor, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.HorizontalCenter);
             PaintLine(graphics, status.Text, status.Problem ? Warning : Muted, padding, statusBounds, status.Action, statusActionBounds, hoverStatus);
             if (meetings.Count == 0)
             {
-                TextRenderer.DrawText(graphics, "Созвонов на сегодня нет", rowFont, new Rectangle(padding, statusBounds.Bottom + padding / 2, Width - padding * 2, rowHeight), Muted, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(graphics, emptyText ?? "", rowFont, new Rectangle(padding, statusBounds.Bottom + padding / 2, Width - padding * 2, rowHeight), Muted, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
             }
             for (int index = 0; index < meetings.Count; index++)
             {
                 if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], heldKey == null ? index == hoverRow : IsHeld(meetings[index]));
             }
             PaintMail(graphics);
+        }
+
+        private void PaintArrow(Graphics graphics, string arrow, Rectangle bounds, bool enabled, bool hovered)
+        {
+            TextRenderer.DrawText(graphics, arrow, titleFont, bounds, enabled ? (hovered ? Link : ForeColor) : Separator, TextFormatFlags.NoPrefix | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        private int ArrowAt(Point point)
+        {
+            if (canBack && backBounds.Contains(point)) return -1;
+            if (canForward && forwardBounds.Contains(point)) return 1;
+            return 0;
         }
 
         private void PaintMail(Graphics graphics)
@@ -234,8 +263,10 @@ namespace MeetingBell
             int row = RowAt(e.Location);
             bool overStatus = !statusActionBounds.IsEmpty && statusActionBounds.Contains(e.Location);
             bool overMail = !mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location);
-            Cursor = row >= 0 || overStatus || overMail ? Cursors.Hand : Cursors.Default;
-            if (row == hoverRow && overStatus == hoverStatus && overMail == hoverMail) return;
+            int arrow = ArrowAt(e.Location);
+            Cursor = row >= 0 || overStatus || overMail || arrow != 0 ? Cursors.Hand : Cursors.Default;
+            if (row == hoverRow && overStatus == hoverStatus && overMail == hoverMail && arrow == hoverArrow) return;
+            hoverArrow = arrow;
             hoverRow = row;
             hoverStatus = overStatus;
             hoverMail = overMail;
@@ -245,7 +276,8 @@ namespace MeetingBell
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (hoverRow < 0 && !hoverStatus && !hoverMail) return;
+            if (hoverRow < 0 && !hoverStatus && !hoverMail && hoverArrow == 0) return;
+            hoverArrow = 0;
             hoverRow = -1;
             hoverStatus = false;
             hoverMail = false;
@@ -268,6 +300,12 @@ namespace MeetingBell
                 return;
             }
             if (e.Button != MouseButtons.Left) return;
+            int arrow = ArrowAt(e.Location);
+            if (arrow != 0)
+            {
+                if (DayStepRequested != null) DayStepRequested(arrow);
+                return;
+            }
             if (!mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location))
             {
                 if (MailClicked != null) MailClicked();

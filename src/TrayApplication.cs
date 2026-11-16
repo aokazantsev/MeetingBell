@@ -64,6 +64,9 @@ namespace MeetingBell
         private int? mailUnread;
         private string mailError;
         private Point listAnchor;
+        private DateTime viewDay;
+        private readonly Dictionary<DateTime, OtherDay> otherDays = new Dictionary<DateTime, OtherDay>();
+        private int otherDaysGeneration;
         private bool updateBalloonShown;
 
         public TrayApplication(AppSettings loaded)
@@ -96,6 +99,7 @@ namespace MeetingBell
             listForm.StatusClicked += OnStatusClicked;
             listForm.MailClicked += OnMailClicked;
             listForm.MenuRequested += OnListMenuRequested;
+            listForm.DayStepRequested += OnDayStep;
             listForm.Pressed += (button, rowKey) =>
             {
                 int pressedAt = Environment.TickCount;
@@ -209,6 +213,8 @@ namespace MeetingBell
             if (cache.Day != now.Date)
             {
                 AppLog.Append("new day " + now.ToString("yyyy-MM-dd"));
+                HideList();
+                ForgetOtherDays();
                 cache = new TodayCache { Day = now.Date };
                 SaveCache();
                 RequestRefresh();
@@ -321,7 +327,11 @@ namespace MeetingBell
             ShowNewMeetings(added);
             UpdateTray();
             UpdateUsageState();
-            if (listForm.Visible) PopulateList();
+            if (listForm.Visible)
+            {
+                LoadNeighbors();
+                PopulateList();
+            }
         }
 
         private void ShowNewMeetings(List<Meeting> added)
@@ -468,6 +478,8 @@ namespace MeetingBell
             }
             authenticationFailed = false;
             lastError = null;
+            if (abandonRunning) ForgetOtherDays();
+            else foreach (OtherDay other in otherDays.Values) other.Stale = true;
             if (fetching && abandonRunning)
             {
                 fetching = false;
@@ -611,7 +623,13 @@ namespace MeetingBell
         private void PopulateList()
         {
             DateTime now = DateTime.Now;
-            listForm.Populate(cache.Meetings, now, CurrentStatus(), Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null, listAnchor);
+            if (viewDay == DateTime.MinValue) viewDay = cache.Day;
+            bool today = viewDay == cache.Day;
+            OtherDay other;
+            otherDays.TryGetValue(viewDay, out other);
+            List<Meeting> shown = today ? cache.Meetings : other != null && other.Meetings != null ? other.Meetings : new List<Meeting>();
+            ListStatus status = today ? CurrentStatus() : new ListStatus(other != null && other.Fetched.HasValue ? "Получено в " + other.Fetched.Value.ToString("HH:mm") : "Список не загружен", null, false);
+            listForm.Populate(shown, now, DayNavigation.Title(viewDay, cache.Day), CanStep(-1), CanStep(1), today ? "Созвонов на сегодня нет" : "Созвонов нет", status, Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null, listAnchor);
             if (listForm.Visible) listForm.ShowNear(listAnchor);
         }
 
@@ -664,6 +682,8 @@ namespace MeetingBell
 
         private void ShowList()
         {
+            viewDay = cache.Day;
+            LoadNeighbors();
             listOpens++;
             PopulateList();
             listForm.ShowNear(listAnchor);
@@ -673,6 +693,107 @@ namespace MeetingBell
         {
             meetingMenu.Close();
             listForm.Hide();
+            viewDay = cache.Day;
+        }
+
+        private bool CanStep(int delta)
+        {
+            DateTime target = viewDay.AddDays(delta);
+            if (!DayNavigation.InRange(target, cache.Day)) return false;
+            if (target == cache.Day) return true;
+            OtherDay other;
+            return otherDays.TryGetValue(target, out other) && other.Ready;
+        }
+
+        private void OnDayStep(int delta)
+        {
+            if (!CanStep(delta)) return;
+            Usage.Hit(delta < 0 ? "list.day_prev" : "list.day_next");
+            meetingMenu.Close();
+            viewDay = viewDay.AddDays(delta);
+            LoadNeighbors();
+            PopulateList();
+        }
+
+        private void LoadNeighbors()
+        {
+            foreach (int delta in new[] { -1, 1 })
+            {
+                DateTime day = viewDay.AddDays(delta);
+                if (day == cache.Day || !DayNavigation.InRange(day, cache.Day)) continue;
+                OtherDay other;
+                if (!otherDays.TryGetValue(day, out other))
+                {
+                    other = new OtherDay();
+                    otherDays[day] = other;
+                }
+                if (other.NeedsLoad(DateTime.Now, settings.CalendarMinutes)) StartOtherDay(day, other);
+            }
+        }
+
+        private void StartOtherDay(DateTime day, OtherDay other)
+        {
+            if (vpnUp != true || !HasCredential || authenticationFailed || !accessConfirmed) return;
+            other.Loading = true;
+            other.Failed = false;
+            other.Stale = false;
+            int generation = otherDaysGeneration;
+            string url = settings.EwsUrl;
+            ExchangeCredential used = credential;
+            int offset = (int)(day - cache.Day).TotalDays;
+            ThreadPool.QueueUserWorkItem(state =>
+            {
+                List<Meeting> meetings = null;
+                string error = null;
+                bool authentication = false;
+                try
+                {
+                    meetings = new EwsClient(url, used).Day(day);
+                }
+                catch (CalendarException failure)
+                {
+                    error = failure.Message;
+                    authentication = failure.IsAuthentication;
+                }
+                catch (Exception failure)
+                {
+                    AppLog.Append("day " + offset + " fetch failed: " + failure);
+                    error = "внутренняя ошибка: " + failure.Message;
+                }
+                Post(() => OnOtherDayLoaded(generation, day, offset, meetings, error, authentication));
+            });
+        }
+
+        private void OnOtherDayLoaded(int generation, DateTime day, int offset, List<Meeting> meetings, string error, bool authentication)
+        {
+            OtherDay other;
+            if (generation != otherDaysGeneration || !otherDays.TryGetValue(day, out other)) return;
+            other.Loading = false;
+            if (error != null)
+            {
+                other.Failed = true;
+                AppLog.Append("day " + offset + " error: " + error);
+                if (authentication && !authenticationFailed)
+                {
+                    authenticationFailed = true;
+                    lastError = error;
+                    AppLog.Append("calendar polling paused until credentials change");
+                    UpdateTray();
+                }
+            }
+            else
+            {
+                other.Meetings = meetings;
+                other.Fetched = DateTime.Now;
+                AppLog.Append("day " + offset + ": " + meetings.Count + " meetings");
+            }
+            if (listForm.Visible) PopulateList();
+        }
+
+        private void ForgetOtherDays()
+        {
+            otherDays.Clear();
+            otherDaysGeneration++;
         }
 
         private void OnListMenuRequested(Point at)
@@ -722,8 +843,9 @@ namespace MeetingBell
             details.Enabled = meeting.HasDetails;
             meetingMenu.Items.Add(details);
             var remind = new ToolStripMenuItem("Напоминание");
-            remind.Enabled = !meeting.IsAllDay;
-            if (!meeting.IsAllDay)
+            bool canRemind = !meeting.IsAllDay && meeting.Start.Date >= cache.Day;
+            remind.Enabled = canRemind;
+            if (canRemind)
             {
                 int custom;
                 bool hasCustom = preferences.TryGetLead(meeting.Uid, out custom);
