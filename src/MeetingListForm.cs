@@ -164,7 +164,7 @@ namespace MeetingBell
             }
             for (int index = 0; index < meetings.Count; index++)
             {
-                if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], index == hoverRow || IsHeld(meetings[index]));
+                if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], heldKey == null ? index == hoverRow : IsHeld(meetings[index]));
             }
             PaintMail(graphics);
         }
