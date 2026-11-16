@@ -20,6 +20,8 @@ namespace MeetingBell
         private const int MaxResponseBytes = 8 * 1024 * 1024;
         private const string DeclinedResponse = "Decline";
         private const int MaxDescription = 4000;
+        private const int MaxPeople = 50;
+        private const int MaxPersonLength = 120;
 
         private readonly Uri endpoint;
         private readonly ExchangeCredential credential;
@@ -85,6 +87,9 @@ namespace MeetingBell
                 if (id == null || !meetings.TryGetValue(id, out meeting)) continue;
                 string body = Text(item, "Body");
                 meeting.Description = Describe(body);
+                meeting.Organizer = People(item, "Organizer");
+                meeting.RequiredAttendees = People(item, "RequiredAttendees");
+                meeting.OptionalAttendees = People(item, "OptionalAttendees");
                 if (meeting.Link == null) meeting.Link = MeetingLinks.Find(body);
                 read.Add(id);
             }
@@ -106,6 +111,36 @@ namespace MeetingBell
                 if (int.TryParse(count.InnerText, NumberStyles.Integer, CultureInfo.InvariantCulture, out unread) && unread >= 0) return unread;
             }
             throw new CalendarException("Exchange не отдал число непрочитанных писем", false);
+        }
+
+        internal static string People(XmlElement item, string field)
+        {
+            var names = new List<string>();
+            int total = 0;
+            foreach (XmlNode child in item.ChildNodes)
+            {
+                if (child.NodeType != XmlNodeType.Element || child.LocalName != field || child.NamespaceURI != TypesNamespace) continue;
+                foreach (XmlElement mailbox in ((XmlElement)child).GetElementsByTagName("Mailbox", TypesNamespace))
+                {
+                    string person = Person(Text(mailbox, "Name"), Text(mailbox, "EmailAddress"));
+                    if (person == null) continue;
+                    total++;
+                    if (names.Count < MaxPeople) names.Add(person);
+                }
+            }
+            if (names.Count == 0) return null;
+            string joined = string.Join("; ", names.ToArray());
+            return total > names.Count ? joined + "; и ещё " + (total - names.Count) : joined;
+        }
+
+        private static string Person(string name, string email)
+        {
+            name = Regex.Replace(name ?? "", @"\s+", " ").Trim();
+            email = Regex.Replace(email ?? "", @"\s+", "").Trim();
+            if (email.StartsWith("/") || email.IndexOf('@') < 0) email = "";
+            string person = name.Length == 0 ? email : email.Length == 0 || name.Equals(email, StringComparison.OrdinalIgnoreCase) ? name : name + " <" + email + ">";
+            if (person.Length == 0) return null;
+            return person.Length > MaxPersonLength ? person.Substring(0, MaxPersonLength - 1) + "…" : person;
         }
 
         internal static string Describe(string body)
@@ -218,7 +253,8 @@ namespace MeetingBell
         {
             var body = new StringBuilder();
             body.Append("<m:GetItem><m:ItemShape><t:BaseShape>IdOnly</t:BaseShape><t:BodyType>Text</t:BodyType><t:AdditionalProperties>");
-            body.Append("<t:FieldURI FieldURI=\"item:Body\"/></t:AdditionalProperties></m:ItemShape><m:ItemIds>");
+            body.Append("<t:FieldURI FieldURI=\"item:Body\"/><t:FieldURI FieldURI=\"calendar:Organizer\"/><t:FieldURI FieldURI=\"calendar:RequiredAttendees\"/>");
+            body.Append("<t:FieldURI FieldURI=\"calendar:OptionalAttendees\"/></t:AdditionalProperties></m:ItemShape><m:ItemIds>");
             foreach (string id in ids)
             {
                 body.Append("<t:ItemId Id=\"").Append(SecurityElement.Escape(id)).Append("\"/>");

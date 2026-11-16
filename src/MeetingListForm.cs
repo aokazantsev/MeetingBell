@@ -273,6 +273,17 @@ namespace MeetingBell
             if (row >= 0 && MeetingClicked != null) MeetingClicked(meetings[row], PointToScreen(e.Location));
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                return;
+            }
+            base.OnFormClosing(e);
+        }
+
         private int RowAt(Point point)
         {
             for (int index = 0; index < rowBounds.Count; index++)

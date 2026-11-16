@@ -215,6 +215,37 @@ namespace MeetingBell
             cache.Save();
             TodayCache loaded = TodayCache.Load(DateTime.Today, line => { });
             Check(loaded.Meetings[0].Description == "Строка 1" + Environment.NewLine + "Строка 2" && loaded.Meetings[1].Description == null, "description survives restart");
+            var people = At(DateTime.Today, 30, "p");
+            var peopleRequest = new Dictionary<string, Meeting> { { "P", people } };
+            string many = "";
+            for (int index = 0; index < 52; index++) many += "<t:Attendee><t:Mailbox><t:Name>Гость " + index + "</t:Name><t:EmailAddress>g" + index + "@example.com</t:EmailAddress></t:Mailbox></t:Attendee>";
+            XmlDocument withPeople = Xml("<m:GetItemResponse><m:ResponseMessages><m:GetItemResponseMessage ResponseClass=\"Success\"><m:Items>"
+                + Item("P", null, "", "", "", "<t:Organizer><t:Mailbox><t:Name>Анна   Петрова</t:Name><t:EmailAddress>anna@example.com</t:EmailAddress></t:Mailbox></t:Organizer>"
+                + "<t:RequiredAttendees><t:Attendee><t:Mailbox><t:Name>bob@example.com</t:Name><t:EmailAddress>bob@example.com</t:EmailAddress></t:Mailbox></t:Attendee>"
+                + "<t:Attendee><t:Mailbox><t:Name>Отдел</t:Name><t:EmailAddress>/O=EXAMPLE/OU=X</t:EmailAddress></t:Mailbox></t:Attendee>"
+                + "<t:Attendee><t:Mailbox><t:EmailAddress>cat@example.com</t:EmailAddress></t:Mailbox></t:Attendee></t:RequiredAttendees>"
+                + "<t:OptionalAttendees>" + many + "</t:OptionalAttendees>")
+                + "</m:Items></m:GetItemResponseMessage></m:ResponseMessages></m:GetItemResponse>");
+            EwsClient.ApplyBodies(withPeople, peopleRequest);
+            Check(people.Organizer == "Анна Петрова <anna@example.com>", "organizer name and address");
+            Check(people.RequiredAttendees == "bob@example.com; Отдел; cat@example.com", "attendees: same name and address once, legacy address dropped, address without name");
+            Check(people.OptionalAttendees.StartsWith("Гость 0 <g0@example.com>; ") && people.OptionalAttendees.EndsWith("; и ещё 2") && people.OptionalAttendees.Contains("Гость 49 <") && !people.OptionalAttendees.Contains("Гость 50"), "long attendee list cut with count");
+            Check(people.Description == null && people.HasDetails && !At(DateTime.Today, 30, "n").HasDetails, "card without text still has details");
+            var oldPeople = At(DateTime.Today, 30, "p");
+            oldPeople.Organizer = "Старый";
+            oldPeople.RequiredAttendees = "A";
+            oldPeople.OptionalAttendees = "B";
+            var freshPeople = At(DateTime.Today, 30, "p");
+            TrayApplication.KeepKnownLinks(new List<Meeting> { freshPeople }, new List<Meeting> { oldPeople });
+            Check(freshPeople.Organizer == "Старый" && freshPeople.RequiredAttendees == "A" && freshPeople.OptionalAttendees == "B", "known people kept when item did not arrive");
+            cache.Meetings[0].Organizer = "Анна <anna@example.com>";
+            cache.Meetings[0].RequiredAttendees = "Боб \"шеф\"";
+            cache.Save();
+            TodayCache reloaded = TodayCache.Load(DateTime.Today, line => { });
+            Check(reloaded.Meetings[0].Organizer == "Анна <anna@example.com>" && reloaded.Meetings[0].RequiredAttendees == "Боб \"шеф\"" && reloaded.Meetings[0].OptionalAttendees == null && reloaded.Meetings[1].Organizer == null, "people survive restart");
+            var morning = new Meeting { Start = new DateTime(2026, 11, 16, 11, 30, 0), End = new DateTime(2026, 11, 16, 12, 0, 0) };
+            Check(DescriptionForm.When(morning) == "понедельник, 16 ноября, 11:30–12:00", "card time line");
+            Check(DescriptionForm.When(new Meeting { Start = new DateTime(2026, 11, 16), End = new DateTime(2026, 11, 17), IsAllDay = true }) == "понедельник, 16 ноября, весь день", "card all-day line");
         }
 
         private static void Mail()
@@ -335,6 +366,10 @@ namespace MeetingBell
             TrayApplication.UseLocationLinks(new List<Meeting> { bare });
             Check(bare.Link == null, "meeting without location keeps no link");
             Check(MeetingLinks.AnyWebLink("https://u:p@a.example/ https://b.example/") == "https://b.example/", "fallback skips link with credentials");
+            List<TextLink> found = MeetingLinks.WebLinks("Док: https://wiki.example.com/a?b=1.\nmailto:x@example.com file://c/d https://u:p@e.example/ (http://f.example/g)");
+            Check(found.Count == 2 && found[0].Url == "https://wiki.example.com/a?b=1" && found[0].Start == 5 && found[0].Length == 30 && found[1].Url == "http://f.example/g", "description links: only http(s) without login, trailing dot and bracket cut");
+            Check(found[0].Contains(5) && found[0].Contains(34) && !found[0].Contains(35) && !found[0].Contains(4), "link range bounds");
+            Check(MeetingLinks.WebLinks(null).Count == 0 && MeetingLinks.WebLinks("нет ссылок").Count == 0, "no links in empty text");
             Check(MeetingLinks.DisplayHost("https://rooms.example.com/5") == "rooms.example.com", "ascii host shown as is");
             var again = new Dictionary<string, Meeting> { { "X", At(DateTime.Today, 30, "x") }, { "Y", At(DateTime.Today, 30, "y") } };
             Meeting oldX = At(DateTime.Today, 30, "x");
@@ -571,6 +606,11 @@ namespace MeetingBell
             Check(EwsClient.CheckUrl("mail") != null, "garbage rejected");
         }
 
+        private static int Count(string people)
+        {
+            return people == null ? 0 : people.Split(';').Length;
+        }
+
         private static int Live(string[] args)
         {
             string url = Environment.GetEnvironmentVariable("EXCHANGE_EWS_URL");
@@ -582,13 +622,15 @@ namespace MeetingBell
             DateTime day = args.Length > 1 ? DateTime.Parse(args[1]) : DateTime.Today;
             try
             {
-                List<Meeting> meetings = new EwsClient(url, credential).Day(day);
-                Console.WriteLine("meetings: " + meetings.Count);
+                var client = new EwsClient(url, credential);
+                List<Meeting> meetings = client.Day(day);
+                Console.WriteLine("meetings: " + meetings.Count + ", bodies problem: " + (client.BodiesProblem ?? "none"));
                 foreach (Meeting meeting in meetings)
                 {
                     Console.WriteLine(meeting.Start.ToString("HH:mm") + "-" + meeting.End.ToString("HH:mm") + " allDay=" + meeting.IsAllDay
                         + " uid=" + (meeting.Uid ?? "").Length + " link=" + (meeting.Link == null ? "none" : new Uri(meeting.Link).Host)
-                        + " location=" + (string.IsNullOrEmpty(meeting.Location) ? "empty" : "set") + " description=" + (meeting.Description == null ? 0 : meeting.Description.Length));
+                        + " location=" + (string.IsNullOrEmpty(meeting.Location) ? "empty" : "set") + " description=" + (meeting.Description == null ? 0 : meeting.Description.Length)
+                        + " organizer=" + (meeting.Organizer == null ? "none" : "set") + " required=" + Count(meeting.RequiredAttendees) + " optional=" + Count(meeting.OptionalAttendees));
                 }
             }
             catch (CalendarException error)

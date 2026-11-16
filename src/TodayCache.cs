@@ -75,6 +75,9 @@ namespace MeetingBell
                     { "location", meeting.Location ?? "" },
                     { "link", meeting.Link ?? "" },
                     { "description", meeting.Description ?? "" },
+                    { "organizer", meeting.Organizer ?? "" },
+                    { "required", meeting.RequiredAttendees ?? "" },
+                    { "optional", meeting.OptionalAttendees ?? "" },
                     { "allDay", meeting.IsAllDay }
                 });
             }
@@ -108,8 +111,16 @@ namespace MeetingBell
                 Location = Text(entry, "location"),
                 Link = MeetingLinks.IsWebLink(link) ? link : null,
                 Description = string.IsNullOrEmpty(description) ? null : description,
+                Organizer = Optional(Text(entry, "organizer")),
+                RequiredAttendees = Optional(Text(entry, "required")),
+                OptionalAttendees = Optional(Text(entry, "optional")),
                 IsAllDay = entry.TryGetValue("allDay", out allDay) && allDay is bool && (bool)allDay
             };
+        }
+
+        private static string Optional(string value)
+        {
+            return string.IsNullOrEmpty(value) ? null : value;
         }
 
         private static bool TryTime(string value, out DateTime local)

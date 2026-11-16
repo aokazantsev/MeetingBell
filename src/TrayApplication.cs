@@ -329,6 +329,9 @@ namespace MeetingBell
                 if (known == null) continue;
                 if (meeting.Link == null) meeting.Link = known.Link;
                 if (meeting.Description == null) meeting.Description = known.Description;
+                if (meeting.Organizer == null) meeting.Organizer = known.Organizer;
+                if (meeting.RequiredAttendees == null) meeting.RequiredAttendees = known.RequiredAttendees;
+                if (meeting.OptionalAttendees == null) meeting.OptionalAttendees = known.OptionalAttendees;
             }
         }
 
@@ -680,42 +683,39 @@ namespace MeetingBell
         private void OnMeetingClicked(Meeting meeting, Point at)
         {
             meetingMenu.Items.Clear();
-            var title = new ToolStripMenuItem(meeting.DisplaySubject.Length > 60 ? meeting.DisplaySubject.Substring(0, 59) + "…" : meeting.DisplaySubject) { Enabled = false };
-            meetingMenu.Items.Add(title);
-            if (meeting.Link != null)
+            var join = new ToolStripMenuItem(meeting.Link != null ? MeetingLinks.JoinText(meeting.Link) : "Подключиться", null, (s, a) =>
             {
-                meetingMenu.Items.Add(new ToolStripMenuItem(MeetingLinks.JoinText(meeting.Link), null, (s, a) =>
-                {
-                    Usage.Hit("meeting.join");
-                    HideList();
-                    OpenLink(meeting);
-                }));
-            }
-            if (meeting.Description != null)
+                Usage.Hit("meeting.join");
+                HideList();
+                OpenLink(meeting);
+            });
+            join.Enabled = meeting.Link != null;
+            meetingMenu.Items.Add(join);
+            var details = new ToolStripMenuItem("Описание", null, (s, a) =>
             {
-                meetingMenu.Items.Add(new ToolStripMenuItem("Описание", null, (s, a) =>
-                {
-                    Usage.Hit("meeting.description");
-                    HideList();
-                    ShowDescription(meeting);
-                }));
-            }
+                Usage.Hit("meeting.description");
+                HideList();
+                ShowDescription(meeting);
+            });
+            details.Enabled = meeting.HasDetails;
+            meetingMenu.Items.Add(details);
+            var remind = new ToolStripMenuItem("Напоминание");
+            remind.Enabled = !meeting.IsAllDay;
             if (!meeting.IsAllDay)
             {
-                meetingMenu.Items.Add(new ToolStripSeparator());
                 int custom;
                 bool hasCustom = preferences.TryGetLead(meeting.Uid, out custom);
-                var defaultItem = new ToolStripMenuItem("По умолчанию (" + LeadText(settings.LeadMinutes) + ")", null, (s, a) => SetLead(meeting, null)) { Checked = !hasCustom };
-                meetingMenu.Items.Add(defaultItem);
+                remind.DropDownItems.Add(new ToolStripMenuItem("По умолчанию (" + LeadText(settings.LeadMinutes) + ")", null, (s, a) => SetLead(meeting, null)) { Checked = !hasCustom });
                 foreach (int lead in LeadChoices)
                 {
                     int chosen = lead;
-                    meetingMenu.Items.Add(new ToolStripMenuItem(lead == 0 ? "В момент начала" : "За " + lead + " мин", null, (s, a) => SetLead(meeting, chosen)) { Checked = hasCustom && custom == lead });
+                    remind.DropDownItems.Add(new ToolStripMenuItem(lead == 0 ? "В момент начала" : "За " + lead + " мин", null, (s, a) => SetLead(meeting, chosen)) { Checked = hasCustom && custom == lead });
                 }
-                meetingMenu.Items.Add(new ToolStripMenuItem("Не напоминать", null, (s, a) => SetLead(meeting, MeetingPreferences.Off)) { Checked = hasCustom && custom == MeetingPreferences.Off });
-                meetingMenu.Items.Add(new ToolStripSeparator());
-                meetingMenu.Items.Add(Disabled("Действует на все встречи этой серии"));
+                remind.DropDownItems.Add(new ToolStripMenuItem("Не напоминать", null, (s, a) => SetLead(meeting, MeetingPreferences.Off)) { Checked = hasCustom && custom == MeetingPreferences.Off });
+                remind.DropDownItems.Add(new ToolStripSeparator());
+                remind.DropDownItems.Add(Disabled("Действует на все встречи этой серии"));
             }
+            meetingMenu.Items.Add(remind);
             SetForegroundWindow(listForm.Handle);
             meetingMenu.Show(at);
         }
@@ -878,6 +878,7 @@ namespace MeetingBell
                 else
                 {
                     AppLog.Append("credential not saved: " + credentialSaveProblem);
+                    if (!addressChanged) accessChanged = false;
                     problems.Add("Не удалось сохранить логин и пароль в диспетчере учётных данных Windows: " + credentialSaveProblem);
                 }
             }

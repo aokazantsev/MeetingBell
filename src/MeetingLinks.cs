@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
@@ -27,6 +28,17 @@ namespace MeetingBell
                 if (IsWebLink(candidate)) return candidate;
             }
             return null;
+        }
+
+        public static List<TextLink> WebLinks(string text)
+        {
+            var links = new List<TextLink>();
+            foreach (Match match in UrlPattern.Matches(text ?? ""))
+            {
+                string candidate = Clean(match.Value);
+                if (IsWebLink(candidate)) links.Add(new TextLink(match.Index, candidate.Length, candidate));
+            }
+            return links;
         }
 
         public static bool IsConference(string link)

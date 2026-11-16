@@ -90,7 +90,7 @@ namespace MeetingBell
             var leadRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0) };
             leadRow.Controls.Add(leadBox);
             leadRow.Controls.Add(new Label { Text = "мин до начала (0 — в момент начала)", AutoSize = true, Margin = new Padding(unit / 3, unit / 3, 0, 0) });
-            AddRow(layout, "Напоминать за:", leadRow, "У отдельной встречи время меняется в списке: наведи на значок и нажми на встречу.");
+            AddRow(layout, "Напоминать за:", leadRow, "У отдельной встречи время меняется в списке: нажми на значок, затем на встречу и выбери «Напоминание».");
 
             AddSection(layout, "Обновление и почта");
             calendarBox.Value = settings.CalendarMinutes;
