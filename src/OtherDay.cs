@@ -17,10 +17,16 @@ namespace MeetingBell
             get { return Meetings != null && !Failed; }
         }
 
+        public bool NeedsLoadWhenViewed(bool retryFailed)
+        {
+            if (Loading || Wanted) return false;
+            return Stale || Meetings == null || Failed && retryFailed;
+        }
+
         public bool NeedsLoad(DateTime now, int freshMinutes, bool retryFailed)
         {
             if (Loading || Wanted) return false;
-            if (Failed) return retryFailed;
+            if (Failed) return retryFailed || Stale;
             if (Meetings == null || Stale || !Fetched.HasValue) return true;
             return now - Fetched.Value >= TimeSpan.FromMinutes(freshMinutes);
         }

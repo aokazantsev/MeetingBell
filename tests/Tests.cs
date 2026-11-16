@@ -332,6 +332,12 @@ namespace MeetingBell
             Check(!failedDay.Ready && failedDay.NeedsLoad(fetchedAt, 5, true) && !failedDay.NeedsLoad(fetchedAt, 5, false), "failed day is not ready, retried only on a new visit");
             var reloading = new OtherDay { Loading = true, Meetings = new List<Meeting>(), Fetched = fetchedAt };
             Check(reloading.Ready && !reloading.NeedsLoad(fetchedAt.AddMinutes(10), 5, true), "day being reloaded keeps old data and is not requested twice");
+            var viewedFailed = new OtherDay { Failed = true, Meetings = new List<Meeting>(), Fetched = fetchedAt };
+            Check(viewedFailed.NeedsLoadWhenViewed(true) && !viewedFailed.NeedsLoadWhenViewed(false), "viewed day that failed reloads on a new visit only");
+            var viewedFresh = new OtherDay { Meetings = new List<Meeting>(), Fetched = fetchedAt };
+            Check(!viewedFresh.NeedsLoadWhenViewed(true), "viewed fresh day is not reloaded on a visit");
+            viewedFresh.Stale = true;
+            Check(viewedFresh.NeedsLoadWhenViewed(false), "viewed day reloads after refresh");
             var queued = new OtherDay { Wanted = true };
             Check(!queued.Ready && !queued.NeedsLoad(fetchedAt, 5, true), "queued day is not ready and not queued twice");
             int overflow;

@@ -217,6 +217,7 @@ namespace MeetingBell
                 HideList();
                 ForgetOtherDays();
                 cache = new TodayCache { Day = now.Date };
+                viewDay = cache.Day;
                 SaveCache();
                 RequestRefresh();
                 loggedMeetingCount = -1;
@@ -698,6 +699,7 @@ namespace MeetingBell
             meetingMenu.Close();
             listForm.Hide();
             viewDay = cache.Day;
+            foreach (OtherDay other in otherDays.Values) other.Wanted = false;
         }
 
         private bool CanStep(int delta)
@@ -723,6 +725,10 @@ namespace MeetingBell
         {
             var days = new List<DateTime> { viewDay.AddDays(-1), viewDay.AddDays(1) };
             if (viewDay != cache.Day) days.Add(viewDay);
+            foreach (KeyValuePair<DateTime, OtherDay> pair in otherDays)
+            {
+                if (!days.Contains(pair.Key)) pair.Value.Wanted = false;
+            }
             foreach (DateTime day in days)
             {
                 if (day == cache.Day || !DayNavigation.InRange(day, cache.Day)) continue;
@@ -732,7 +738,7 @@ namespace MeetingBell
                     other = new OtherDay();
                     otherDays[day] = other;
                 }
-                bool wanted = day == viewDay ? other.Stale && !other.Loading && !other.Wanted : other.NeedsLoad(DateTime.Now, settings.CalendarMinutes, retryFailed);
+                bool wanted = day == viewDay ? other.NeedsLoadWhenViewed(retryFailed) : other.NeedsLoad(DateTime.Now, settings.CalendarMinutes, retryFailed);
                 if (wanted) other.Wanted = true;
             }
             PumpOtherDays();
@@ -742,6 +748,8 @@ namespace MeetingBell
         {
             if (otherDayLoading || fetching || mailFetching) return;
             if (vpnUp != true || !HasCredential || authenticationFailed || !accessConfirmed) return;
+            DateTime now = DateTime.Now;
+            if (now >= nextRefresh || now >= nextMailRefresh) return;
             foreach (KeyValuePair<DateTime, OtherDay> pair in otherDays)
             {
                 if (!pair.Value.Wanted) continue;
@@ -815,7 +823,7 @@ namespace MeetingBell
                     AppLog.Append("day " + offset + ": " + meetings.Count + " meetings");
                 }
             }
-            PumpOtherDays();
+            Post(Tick);
             if (listForm.Visible) PopulateList();
         }
 
