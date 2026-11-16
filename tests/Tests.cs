@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Xml;
@@ -219,6 +220,7 @@ namespace MeetingBell
         private static void Mail()
         {
             Check(TrayApplication.MailText(null) == "Почта ещё не загружена" && TrayApplication.MailText(0) == "Новых писем нет", "mail text without count");
+            Check(BellPainter.ColorOf(TrayState.Ready).ToArgb() == Color.FromArgb(46, 160, 67).ToArgb() && BellPainter.ColorOf(TrayState.Offline).ToArgb() == Color.FromArgb(150, 150, 150).ToArgb() && BellPainter.ColorOf(TrayState.Problem).ToArgb() == Color.FromArgb(218, 54, 51).ToArgb(), "tray colors: green, gray, red");
             Check(TrayApplication.MailText(1) == "У вас 1 новое письмо" && TrayApplication.MailText(3) == "У вас 3 новых письма" && TrayApplication.MailText(5) == "У вас 5 новых писем", "mail plural 1/3/5");
             Check(TrayApplication.MailText(11) == "У вас 11 новых писем" && TrayApplication.MailText(21) == "У вас 21 новое письмо" && TrayApplication.MailText(112) == "У вас 112 новых писем", "mail plural 11/21/112");
             Check(TrayApplication.MailText(2) == "У вас 2 новых письма" && TrayApplication.MailText(4) == "У вас 4 новых письма" && TrayApplication.MailText(22) == "У вас 22 новых письма", "mail plural 2/4/22");

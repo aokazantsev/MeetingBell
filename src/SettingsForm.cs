@@ -94,9 +94,9 @@ namespace MeetingBell
 
             AddSection(layout, "Обновление и почта");
             calendarBox.Value = settings.CalendarMinutes;
-            AddRow(layout, "Календарь:", MinutesRow(calendarBox, "раз в столько минут"), null);
+            AddRow(layout, "Календарь:", MinutesRow(calendarBox), null);
             mailBox.Value = settings.MailMinutes;
-            AddRow(layout, "Почта:", MinutesRow(mailBox, "раз в столько минут"), "Число непрочитанных писем во «Входящих» (без подпапок) — внизу списка.");
+            AddRow(layout, "Почта:", MinutesRow(mailBox), "Число непрочитанных писем во «Входящих» (без подпапок) — внизу списка.");
             mailUrlBox.Width = fieldWidth;
             mailUrlBox.Text = settings.MailUrl;
             AddRow(layout, "Веб-почта:", mailUrlBox, "Адрес для кнопки «Открыть». Пусто — https://<сервер EWS>/owa/#path=/mail");
@@ -121,12 +121,12 @@ namespace MeetingBell
             CancelButton = cancel;
         }
 
-        private static FlowLayoutPanel MinutesRow(NumericUpDown box, string caption)
+        private static FlowLayoutPanel MinutesRow(NumericUpDown box)
         {
             int unit = SystemFonts.MessageBoxFont.Height;
             var row = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0) };
             row.Controls.Add(box);
-            row.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(unit / 3, unit / 3, 0, 0) });
+            row.Controls.Add(new Label { Text = "раз в столько минут", AutoSize = true, Margin = new Padding(unit / 3, unit / 3, 0, 0) });
             return row;
         }
 
@@ -236,7 +236,7 @@ namespace MeetingBell
             string mailUrl = mailUrlBox.Text.Trim();
             if (mailUrl.Length > 0 && !MeetingLinks.IsWebLink(mailUrl))
             {
-                MessageBox.Show(this, "Адрес веб-почты должен начинаться с https:// или http://.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Адрес веб-почты должен начинаться с https:// или http:// и не содержать логина и пароля.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 mailUrlBox.Focus();
                 return;
             }
@@ -255,7 +255,7 @@ namespace MeetingBell
             result.LeadMinutes = (int)leadBox.Value;
             result.CalendarMinutes = (int)calendarBox.Value;
             result.MailMinutes = (int)mailBox.Value;
-            result.MailUrl = mailUrlBox.Text.Trim();
+            result.MailUrl = mailUrl;
             Result = result;
             AutoUpdateChosen = autoUpdateBox.Checked;
             UsageStatisticsChosen = usageBox.Checked;

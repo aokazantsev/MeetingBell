@@ -8,9 +8,9 @@ namespace MeetingBell
 {
     internal static class BellPainter
     {
-        private static readonly Color ReadyColor = Color.FromArgb(255, 183, 0);
+        private static readonly Color ReadyColor = Color.FromArgb(46, 160, 67);
         private static readonly Color OfflineColor = Color.FromArgb(150, 150, 150);
-        private static readonly Color ProblemColor = Color.FromArgb(220, 53, 69);
+        private static readonly Color ProblemColor = Color.FromArgb(218, 54, 51);
 
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);
@@ -24,15 +24,7 @@ namespace MeetingBell
                 {
                     graphics.SmoothingMode = SmoothingMode.AntiAlias;
                     graphics.Clear(Color.Transparent);
-                    DrawBell(graphics, new RectangleF(0, 0, size.Width, size.Height), state == TrayState.Ready ? ReadyColor : OfflineColor);
-                    if (state == TrayState.Problem)
-                    {
-                        float dot = size.Width * 0.45f;
-                        using (var brush = new SolidBrush(ProblemColor))
-                        {
-                            graphics.FillEllipse(brush, size.Width - dot, 0, dot, dot);
-                        }
-                    }
+                    DrawBell(graphics, new RectangleF(0, 0, size.Width, size.Height), ColorOf(state));
                 }
                 IntPtr handle = bitmap.GetHicon();
                 try
@@ -44,6 +36,12 @@ namespace MeetingBell
                     DestroyIcon(handle);
                 }
             }
+        }
+
+        public static Color ColorOf(TrayState state)
+        {
+            if (state == TrayState.Ready) return ReadyColor;
+            return state == TrayState.Offline ? OfflineColor : ProblemColor;
         }
 
         public static void DrawBell(Graphics graphics, RectangleF box, Color color)

@@ -41,7 +41,7 @@ namespace MeetingBell
         private int hoverRow = -1;
         private bool hoverStatus;
         private string mailText;
-        private bool mailOpenable;
+        private string mailAction;
         private Rectangle mailBounds;
         private Rectangle mailOpenBounds;
         private bool hoverMail;
@@ -49,6 +49,7 @@ namespace MeetingBell
         public event Action<Meeting, Point> MeetingClicked;
         public event Action StatusClicked;
         public event Action MailClicked;
+        public event Action<Point> MenuRequested;
 
         public MeetingListForm()
         {
@@ -87,7 +88,7 @@ namespace MeetingBell
         public void Populate(List<Meeting> list, DateTime current, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen)
         {
             mailText = mail;
-            mailOpenable = mailCanOpen;
+            mailAction = mailCanOpen ? OpenText : null;
             meetings = list;
             now = current;
             status = listStatus;
@@ -105,13 +106,6 @@ namespace MeetingBell
             y = Math.Max(area.Top + ScreenMargin, Math.Min(y, area.Bottom - Height - ScreenMargin));
             Location = new Point(x, y);
             if (!Visible) Show();
-        }
-
-        public bool Contains(Point screenPoint, int slack)
-        {
-            Rectangle bounds = Bounds;
-            bounds.Inflate(slack, slack);
-            return Visible && bounds.Contains(screenPoint);
         }
 
         private void Arrange(int maxHeight)
@@ -143,7 +137,7 @@ namespace MeetingBell
             if (meetings.Count == 0) top += rowHeight;
             Height = top + footer;
             mailBounds = new Rectangle(0, Height - mailRow, Width, mailRow);
-            mailOpenBounds = ActionBounds(mailOpenable ? OpenText : null, mailBounds);
+            mailOpenBounds = ActionBounds(mailAction, mailBounds);
         }
 
         private Rectangle ActionBounds(string action, Rectangle line)
@@ -190,7 +184,7 @@ namespace MeetingBell
                 graphics.DrawLines(pen, new[] { new Point(icon.Left, icon.Top), new Point(icon.Left + icon.Width / 2, icon.Top + icon.Height * 3 / 5), new Point(icon.Right, icon.Top) });
             }
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
-            PaintLine(graphics, mailText, Muted, icon.Right + padding / 2, mailBounds, mailOpenable ? OpenText : null, mailOpenBounds, hoverMail);
+            PaintLine(graphics, mailText, Muted, icon.Right + padding / 2, mailBounds, mailAction, mailOpenBounds, hoverMail);
         }
 
         private void PaintLine(Graphics graphics, string text, Color color, int textLeft, Rectangle line, string action, Rectangle actionBounds, bool hovered)
@@ -259,6 +253,12 @@ namespace MeetingBell
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Right)
+            {
+                if (MenuRequested != null) MenuRequested(PointToScreen(e.Location));
+                return;
+            }
+            if (e.Button != MouseButtons.Left) return;
             if (!mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location))
             {
                 if (MailClicked != null) MailClicked();
