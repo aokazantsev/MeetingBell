@@ -30,6 +30,7 @@ namespace MeetingBell
         private readonly System.Windows.Forms.Timer tickTimer = new System.Windows.Forms.Timer();
         private readonly MeetingListForm listForm = new MeetingListForm();
         private readonly ContextMenuStrip meetingMenu = new ContextMenuStrip();
+        private const string ListMenuKey = "list";
         private readonly MenuClickToggle trayMenuToggle = new MenuClickToggle();
         private readonly MenuClickToggle meetingMenuToggle = new MenuClickToggle();
         private readonly ReminderPlanner planner = new ReminderPlanner();
@@ -95,12 +96,18 @@ namespace MeetingBell
             listForm.StatusClicked += OnStatusClicked;
             listForm.MailClicked += OnMailClicked;
             listForm.MenuRequested += OnListMenuRequested;
+            listForm.Pressed += (button, rowKey) =>
+            {
+                int pressedAt = Environment.TickCount;
+                trayMenuToggle.PressStarted(button == MouseButtons.Right ? ListMenuKey : null, pressedAt);
+                meetingMenuToggle.PressStarted(button == MouseButtons.Left ? rowKey : null, pressedAt);
+            };
             meetingMenu.Closed += (sender, e) =>
             {
-                meetingMenuToggle.OnClosed(e.CloseReason, listForm.HeldKey, Environment.TickCount);
+                meetingMenuToggle.OnClosed(e.CloseReason, Environment.TickCount);
                 listForm.ReleaseHeldRow();
             };
-            trayIcon.ContextMenuStrip.Closed += (sender, e) => trayMenuToggle.OnClosed(e.CloseReason, "", Environment.TickCount);
+            trayIcon.ContextMenuStrip.Closed += (sender, e) => trayMenuToggle.OnClosed(e.CloseReason, Environment.TickCount);
             tickTimer.Interval = TickMs;
             tickTimer.Tick += (sender, e) => Tick();
             UpdateTray();
@@ -670,7 +677,8 @@ namespace MeetingBell
 
         private void OnListMenuRequested(Point at)
         {
-            if (trayMenuToggle.ConsumeJustClosed("", Environment.TickCount, SystemInformation.DoubleClickTime)) return;
+            if (trayMenuToggle.ConsumeRelease(ListMenuKey)) return;
+            trayMenuToggle.Opened(ListMenuKey);
             Usage.Hit("list.menu");
             meetingMenu.Close();
             SetForegroundWindow(listForm.Handle);
@@ -691,7 +699,7 @@ namespace MeetingBell
 
         private void OnMeetingClicked(Meeting meeting, Point at)
         {
-            if (meetingMenuToggle.ConsumeJustClosed(meeting.ReminderKey, Environment.TickCount, SystemInformation.DoubleClickTime))
+            if (meetingMenuToggle.ConsumeRelease(meeting.ReminderKey))
             {
                 listForm.ReleaseHeldRow();
                 return;
@@ -731,6 +739,7 @@ namespace MeetingBell
             }
             meetingMenu.Items.Add(remind);
             SetForegroundWindow(listForm.Handle);
+            meetingMenuToggle.Opened(meeting.ReminderKey);
             meetingMenu.Show(at);
         }
 

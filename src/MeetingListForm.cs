@@ -51,6 +51,7 @@ namespace MeetingBell
         public event Action StatusClicked;
         public event Action MailClicked;
         public event Action<Point> MenuRequested;
+        public event Action<MouseButtons, string> Pressed;
 
         public MeetingListForm()
         {
@@ -251,6 +252,13 @@ namespace MeetingBell
             Invalidate();
         }
 
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            int row = e.Button == MouseButtons.Left ? RowAt(e.Location) : -1;
+            if (Pressed != null) Pressed(e.Button, row >= 0 ? meetings[row].ReminderKey : null);
+        }
+
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
@@ -286,11 +294,6 @@ namespace MeetingBell
                 return;
             }
             base.OnFormClosing(e);
-        }
-
-        public string HeldKey
-        {
-            get { return heldKey; }
         }
 
         public void ReleaseHeldRow()
