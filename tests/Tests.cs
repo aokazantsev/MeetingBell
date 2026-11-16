@@ -253,7 +253,11 @@ namespace MeetingBell
             Check(negative, "negative unread rejected");
             File.WriteAllText(AppSettings.FilePath, "calendarMinutes=99999\nmailMinutes=-3\nmailUrl=https://u:p@host/\n");
             AppSettings bounds = AppSettings.Load();
-            Check(bounds.CalendarMinutes == AppSettings.MaxRefreshMinutes && bounds.MailMinutes == 1 && bounds.MailUrl == "", "refresh upper and lower bounds, mail url with credentials dropped");
+            Check(AppSettings.MaxCalendarMinutes == 30 && AppSettings.MaxMailMinutes == 1440, "refresh limits");
+            Check(bounds.CalendarMinutes == AppSettings.MaxCalendarMinutes && bounds.MailMinutes == 1 && bounds.MailUrl == "", "refresh upper and lower bounds, mail url with credentials dropped");
+            File.WriteAllText(AppSettings.FilePath, "calendarMinutes=31\nmailMinutes=99999\n");
+            AppSettings over = AppSettings.Load();
+            Check(over.CalendarMinutes == 30 && over.MailMinutes == 1440, "calendar above 30 and mail above a day clamped");
             File.Delete(AppSettings.FilePath);
             var derived = new AppSettings { EwsUrl = "https://mail.example.com/EWS/Exchange.asmx" };
             Check(derived.WebMailUrl == "https://mail.example.com/owa/#path=/mail", "web mail derived from EWS host");

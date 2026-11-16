@@ -18,8 +18,8 @@ namespace MeetingBell
         private readonly Label testResult = new Label { AutoSize = true, UseMnemonic = false };
         private readonly ComboBox vpnBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
         private readonly NumericUpDown leadBox = new NumericUpDown { Minimum = 0, Maximum = AppSettings.MaxLeadMinutes, Width = 60 };
-        private readonly NumericUpDown calendarBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxRefreshMinutes, Width = 60 };
-        private readonly NumericUpDown mailBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxRefreshMinutes, Width = 60 };
+        private readonly NumericUpDown calendarBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxCalendarMinutes, Width = 60 };
+        private readonly NumericUpDown mailBox = new NumericUpDown { Minimum = 1, Maximum = AppSettings.MaxMailMinutes, Width = 60 };
         private readonly TextBox mailUrlBox = new TextBox();
         private readonly CheckBox autoUpdateBox = new CheckBox { Text = "Проверять обновление раз в сутки", AutoSize = true };
         private readonly CheckBox usageBox = new CheckBox { Text = "Отправлять автору анонимную статистику использования", AutoSize = true };

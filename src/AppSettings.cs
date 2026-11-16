@@ -21,7 +21,8 @@ namespace MeetingBell
         private const string MailMinutesKey = "mailMinutes";
         private const string MailUrlKey = "mailUrl";
         public const int DefaultRefreshMinutes = 5;
-        public const int MaxRefreshMinutes = 1440;
+        public const int MaxCalendarMinutes = 30;
+        public const int MaxMailMinutes = 1440;
         private const char KeyValueSeparator = '=';
         private const char ListSeparator = '|';
         private const int ReadAttempts = 5;
@@ -185,8 +186,8 @@ namespace MeetingBell
             if (Is(key, EwsUrlKey)) EwsUrl = value.Length == 0 ? DefaultEwsUrl : value;
             else if (Is(key, VpnAdaptersKey)) VpnAdapters = ParseList(value);
             else if (Is(key, LeadMinutesKey)) LeadMinutes = ParseInt(value, DefaultLeadMinutes, 0, MaxLeadMinutes);
-            else if (Is(key, CalendarMinutesKey)) CalendarMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxRefreshMinutes);
-            else if (Is(key, MailMinutesKey)) MailMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxRefreshMinutes);
+            else if (Is(key, CalendarMinutesKey)) CalendarMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxCalendarMinutes);
+            else if (Is(key, MailMinutesKey)) MailMinutes = ParseInt(value, DefaultRefreshMinutes, 1, MaxMailMinutes);
             else if (Is(key, MailUrlKey)) MailUrl = MeetingLinks.IsWebLink(value) ? value : "";
         }
 
