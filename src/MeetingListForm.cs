@@ -39,6 +39,7 @@ namespace MeetingBell
         private Rectangle statusBounds;
         private Rectangle statusActionBounds;
         private int hoverRow = -1;
+        private string heldKey;
         private bool hoverStatus;
         private string mailText;
         private string mailAction;
@@ -163,7 +164,7 @@ namespace MeetingBell
             }
             for (int index = 0; index < meetings.Count; index++)
             {
-                if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], index == hoverRow);
+                if (!rowBounds[index].IsEmpty) PaintRow(graphics, meetings[index], rowBounds[index], index == hoverRow || IsHeld(meetings[index]));
             }
             PaintMail(graphics);
         }
@@ -270,7 +271,10 @@ namespace MeetingBell
                 return;
             }
             int row = RowAt(e.Location);
-            if (row >= 0 && MeetingClicked != null) MeetingClicked(meetings[row], PointToScreen(e.Location));
+            if (row < 0) return;
+            heldKey = meetings[row].ReminderKey;
+            Invalidate();
+            if (MeetingClicked != null) MeetingClicked(meetings[row], PointToScreen(e.Location));
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -282,6 +286,18 @@ namespace MeetingBell
                 return;
             }
             base.OnFormClosing(e);
+        }
+
+        public void ReleaseHeldRow()
+        {
+            if (heldKey == null) return;
+            heldKey = null;
+            Invalidate();
+        }
+
+        private bool IsHeld(Meeting meeting)
+        {
+            return heldKey != null && meeting.ReminderKey == heldKey;
         }
 
         private int RowAt(Point point)

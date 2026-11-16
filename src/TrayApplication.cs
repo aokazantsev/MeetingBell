@@ -93,6 +93,7 @@ namespace MeetingBell
             listForm.StatusClicked += OnStatusClicked;
             listForm.MailClicked += OnMailClicked;
             listForm.MenuRequested += OnListMenuRequested;
+            meetingMenu.Closed += (sender, e) => listForm.ReleaseHeldRow();
             tickTimer.Interval = TickMs;
             tickTimer.Tick += (sender, e) => Tick();
             UpdateTray();
