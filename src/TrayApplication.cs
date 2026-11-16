@@ -594,35 +594,20 @@ namespace MeetingBell
         private void PopulateList()
         {
             DateTime now = DateTime.Now;
-            bool problem;
-            bool clickable;
-            string status = StatusLine(out problem, out clickable);
-            listForm.Populate(cache.Meetings, now, status, problem, clickable, Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null);
+            listForm.Populate(cache.Meetings, now, CurrentStatus(), Describe, MailLine(mailUnread, mailError), settings.WebMailUrl != null);
             if (listForm.Visible) listForm.ShowNear(hoverAnchor);
         }
 
-        private string StatusLine(out bool problem, out bool clickable)
+        private ListStatus CurrentStatus()
         {
-            problem = true;
-            clickable = true;
-            string asOf = cache.Fetched.HasValue ? "список на " + cache.Fetched.Value.ToString("HH:mm") : "список не загружен";
-            if (credentialProblem != null && credential == null) return "Не прочитан логин Exchange: " + credentialProblem + " — открыть настройки";
-            if (!HasCredential) return "Не задан логин Exchange — открыть настройки";
-            if (authenticationFailed) return Capitalize(lastError) + " — открыть настройки";
-            if (vpnUp != true)
-            {
-                problem = false;
-                clickable = false;
-                return "VPN выключен — " + asOf;
-            }
-            if (lastError != null) return Capitalize(lastError) + " — повторить";
-            problem = false;
-            if (fetching && !cache.Fetched.HasValue)
-            {
-                clickable = false;
-                return "Загружаю…";
-            }
-            return cache.Fetched.HasValue ? "Обновлено в " + cache.Fetched.Value.ToString("HH:mm") + " — обновить" : "Список не загружен — обновить";
+            const string OpenSettings = "Настройки";
+            if (credentialProblem != null && credential == null) return new ListStatus("Не прочитан логин Exchange: " + credentialProblem, OpenSettings, true);
+            if (!HasCredential) return new ListStatus("Не задан логин Exchange", OpenSettings, true);
+            if (authenticationFailed) return new ListStatus(Capitalize(lastError), OpenSettings, true);
+            if (vpnUp != true) return new ListStatus("VPN выключен, " + (cache.Fetched.HasValue ? "список на " + cache.Fetched.Value.ToString("HH:mm") : "список не загружен"), null, false);
+            if (lastError != null) return new ListStatus(Capitalize(lastError), "Повторить", true);
+            if (fetching && !cache.Fetched.HasValue) return new ListStatus("Загружаю…", null, false);
+            return new ListStatus(cache.Fetched.HasValue ? "Обновлено в " + cache.Fetched.Value.ToString("HH:mm") : "Список не загружен", "Обновить", false);
         }
 
         private string Describe(Meeting meeting)
@@ -799,12 +784,10 @@ namespace MeetingBell
             HideList();
             ContextMenuStrip menu = trayIcon.ContextMenuStrip;
             menu.Items.Clear();
-            bool problem;
-            bool clickable;
             DateTime now = DateTime.Now;
             menu.Items.Add(Disabled(HeadlineForMenu(now)));
-            string status = StatusLine(out problem, out clickable);
-            if (problem || vpnUp != true) menu.Items.Add(Disabled(TrimStatus(status)));
+            ListStatus status = CurrentStatus();
+            if (status.Problem || vpnUp != true) menu.Items.Add(Disabled(status.Text));
             var refresh = new ToolStripMenuItem("Обновить сейчас", null, (s, a) =>
             {
                 Usage.Hit("menu.refresh");
@@ -847,15 +830,6 @@ namespace MeetingBell
             if (next == null) return cache.Fetched.HasValue || cache.Meetings.Count > 0 ? "Созвонов на сегодня больше нет" : "Список созвонов не загружен";
             string subject = next.DisplaySubject.Length > 50 ? next.DisplaySubject.Substring(0, 49) + "…" : next.DisplaySubject;
             return (next.IsGoing(now) ? "Идёт: " : "Следующий: ") + next.Start.ToString("HH:mm") + " " + subject;
-        }
-
-        private static string TrimStatus(string status)
-        {
-            foreach (string tail in new[] { " — открыть настройки", " — повторить", " — обновить" })
-            {
-                if (status.EndsWith(tail)) return status.Substring(0, status.Length - tail.Length);
-            }
-            return status;
         }
 
         private void OnTrayDoubleClick(object sender, MouseEventArgs e)

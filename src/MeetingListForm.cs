@@ -35,10 +35,9 @@ namespace MeetingBell
         private readonly List<Rectangle> rowBounds = new List<Rectangle>();
         private Func<Meeting, string> describe;
         private DateTime now;
-        private string status;
-        private bool statusIsProblem;
-        private bool statusClickable;
+        private ListStatus status = new ListStatus("", null, false);
         private Rectangle statusBounds;
+        private Rectangle statusActionBounds;
         private int hoverRow = -1;
         private bool hoverStatus;
         private string mailText;
@@ -85,15 +84,13 @@ namespace MeetingBell
             }
         }
 
-        public void Populate(List<Meeting> list, DateTime current, string statusText, bool problem, bool clickable, Func<Meeting, string> description, string mail, bool mailCanOpen)
+        public void Populate(List<Meeting> list, DateTime current, ListStatus listStatus, Func<Meeting, string> description, string mail, bool mailCanOpen)
         {
             mailText = mail;
             mailOpenable = mailCanOpen;
             meetings = list;
             now = current;
-            status = statusText;
-            statusIsProblem = problem;
-            statusClickable = clickable;
+            status = listStatus;
             describe = description;
             Arrange(Screen.FromPoint(Cursor.Position).WorkingArea.Height - ScreenMargin * 2);
             Invalidate();
@@ -121,9 +118,10 @@ namespace MeetingBell
         {
             rowBounds.Clear();
             int top = padding + titleFont.Height + padding / 3;
-            statusBounds = new Rectangle(padding, top, Width - padding * 2, smallFont.Height);
-            top = statusBounds.Bottom + padding / 2;
             int mailRow = rowFont.Height + padding;
+            statusBounds = new Rectangle(0, top, Width, rowFont.Height);
+            statusActionBounds = ActionBounds(status.Action, statusBounds);
+            top = statusBounds.Bottom + padding / 2;
             int footer = padding / 2 + mailRow;
             int visible = meetings.Count == 0 ? 0 : Math.Max(1, Math.Min(meetings.Count, (maxHeight - top - footer - padding) / rowHeight));
             int skip = meetings.Count - visible;
@@ -145,8 +143,14 @@ namespace MeetingBell
             if (meetings.Count == 0) top += rowHeight;
             Height = top + footer;
             mailBounds = new Rectangle(0, Height - mailRow, Width, mailRow);
-            int openWidth = TextRenderer.MeasureText(OpenText, smallFont).Width + padding / 2;
-            mailOpenBounds = mailOpenable ? new Rectangle(Width - padding - openWidth, mailBounds.Y, openWidth + padding / 2, mailRow) : Rectangle.Empty;
+            mailOpenBounds = ActionBounds(mailOpenable ? OpenText : null, mailBounds);
+        }
+
+        private Rectangle ActionBounds(string action, Rectangle line)
+        {
+            if (action == null) return Rectangle.Empty;
+            int width = TextRenderer.MeasureText(action, smallFont).Width + padding / 2;
+            return new Rectangle(Width - padding - width, line.Y, width + padding / 2, line.Height);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -158,10 +162,7 @@ namespace MeetingBell
             }
             string title = "Сегодня, " + DateTime.Today.ToString("d MMMM, dddd", Russian);
             TextRenderer.DrawText(graphics, title, titleFont, new Point(padding, padding), ForeColor, TextFormatFlags.NoPrefix);
-            Color statusColor = statusIsProblem ? Warning : Muted;
-            Font statusFont = statusClickable && hoverStatus ? new Font(smallFont, FontStyle.Underline) : smallFont;
-            TextRenderer.DrawText(graphics, status ?? "", statusFont, statusBounds, statusColor, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
-            if (statusFont != smallFont) statusFont.Dispose();
+            PaintLine(graphics, status.Text, status.Problem ? Warning : Muted, padding, statusBounds, status.Action, statusActionBounds, hoverStatus);
             if (meetings.Count == 0)
             {
                 TextRenderer.DrawText(graphics, "Созвонов на сегодня нет", rowFont, new Rectangle(padding, statusBounds.Bottom + padding / 2, Width - padding * 2, rowHeight), Muted, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
@@ -189,13 +190,17 @@ namespace MeetingBell
                 graphics.DrawLines(pen, new[] { new Point(icon.Left, icon.Top), new Point(icon.Left + icon.Width / 2, icon.Top + icon.Height * 3 / 5), new Point(icon.Right, icon.Top) });
             }
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
-            int textLeft = icon.Right + padding / 2;
-            int textRight = mailOpenBounds.IsEmpty ? Width - padding : mailOpenBounds.Left;
-            TextRenderer.DrawText(graphics, mailText ?? "", rowFont, new Rectangle(textLeft, mailBounds.Y, textRight - textLeft, mailBounds.Height), Muted, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-            if (mailOpenBounds.IsEmpty) return;
-            using (Font open = hoverMail ? new Font(smallFont, FontStyle.Underline) : new Font(smallFont, FontStyle.Regular))
+            PaintLine(graphics, mailText, Muted, icon.Right + padding / 2, mailBounds, mailOpenable ? OpenText : null, mailOpenBounds, hoverMail);
+        }
+
+        private void PaintLine(Graphics graphics, string text, Color color, int textLeft, Rectangle line, string action, Rectangle actionBounds, bool hovered)
+        {
+            int textRight = actionBounds.IsEmpty ? Width - padding : actionBounds.Left;
+            TextRenderer.DrawText(graphics, text ?? "", rowFont, new Rectangle(textLeft, line.Y, textRight - textLeft, line.Height), color, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            if (actionBounds.IsEmpty) return;
+            using (Font font = new Font(smallFont, hovered ? FontStyle.Underline : FontStyle.Regular))
             {
-                TextRenderer.DrawText(graphics, OpenText, open, mailOpenBounds, Link, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
+                TextRenderer.DrawText(graphics, action, font, actionBounds, Link, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.Right);
             }
         }
 
@@ -231,7 +236,7 @@ namespace MeetingBell
         {
             base.OnMouseMove(e);
             int row = RowAt(e.Location);
-            bool overStatus = statusClickable && statusBounds.Contains(e.Location);
+            bool overStatus = !statusActionBounds.IsEmpty && statusActionBounds.Contains(e.Location);
             bool overMail = !mailOpenBounds.IsEmpty && mailOpenBounds.Contains(e.Location);
             Cursor = row >= 0 || overStatus || overMail ? Cursors.Hand : Cursors.Default;
             if (row == hoverRow && overStatus == hoverStatus && overMail == hoverMail) return;
@@ -259,7 +264,7 @@ namespace MeetingBell
                 if (MailClicked != null) MailClicked();
                 return;
             }
-            if (statusClickable && statusBounds.Contains(e.Location))
+            if (!statusActionBounds.IsEmpty && statusActionBounds.Contains(e.Location))
             {
                 if (StatusClicked != null) StatusClicked();
                 return;
